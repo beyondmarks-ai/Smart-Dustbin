@@ -6,6 +6,9 @@ guidance, material details, and reuse ideas from a smart dustbin backend.
 ## Features
 
 - Live waste records fetched from an HTTP API
+- Fill-level estimate based on a configurable 50-item bin capacity
+- Confirmed clear-all action for visible waste records
+- Automatic 10-second refresh and scrolling when new waste arrives
 - Recycling status, confidence, and contamination notes
 - Reuse ideas and safety warnings
 - Responsive dashboard for compact Android devices

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'azure_waste_repository.dart';
@@ -16,10 +18,136 @@ abstract final class AppColors {
   static const divider = Color(0xFF17303A);
 }
 
-class HomeDashboard extends StatelessWidget {
+class HomeDashboard extends StatefulWidget {
   const HomeDashboard({super.key, this.repository});
 
   final WasteRepository? repository;
+
+  @override
+  State<HomeDashboard> createState() => _HomeDashboardState();
+}
+
+class _HomeDashboardState extends State<HomeDashboard> {
+  static const _refreshInterval = Duration(seconds: 10);
+  static const _binCapacity = 50;
+
+  final ScrollController _scrollController = ScrollController();
+  final Set<String> _clearedEntryKeys = <String>{};
+  Timer? _refreshTimer;
+  late WasteRepository _repository;
+  List<WasteEntry>? _entries;
+  Object? _loadError;
+
+  @override
+  void initState() {
+    super.initState();
+    _repository = widget.repository ?? AzureWasteRepository();
+    _loadWaste();
+    _refreshTimer = Timer.periodic(
+      _refreshInterval,
+      (_) => _loadWaste(scrollToNewWaste: true),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeDashboard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.repository != widget.repository) {
+      _repository = widget.repository ?? AzureWasteRepository();
+      _clearedEntryKeys.clear();
+      _entries = null;
+      _loadWaste();
+    }
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadWaste({bool scrollToNewWaste = false}) async {
+    final previousTotal = _totalItems;
+    try {
+      final fetchedEntries = await _repository.fetchWaste();
+      final visibleEntries = fetchedEntries
+          .where((entry) => !_clearedEntryKeys.contains(_entryKey(entry)))
+          .toList(growable: false);
+      if (!mounted) return;
+
+      final nextTotal = _countItems(visibleEntries);
+      setState(() {
+        _entries = visibleEntries;
+        _loadError = null;
+      });
+      if (scrollToNewWaste && nextTotal > previousTotal) {
+        _scrollToLatestWaste();
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _loadError = error);
+    }
+  }
+
+  Future<void> _confirmClearWaste() async {
+    if ((_entries ?? const <WasteEntry>[]).isEmpty) return;
+    final shouldClear = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear all waste?'),
+        content: const Text(
+          'This clears every waste record currently shown in the dashboard.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Clear all'),
+          ),
+        ],
+      ),
+    );
+    if (shouldClear != true || !mounted) return;
+
+    setState(() {
+      _clearedEntryKeys.addAll(_entries!.map(_entryKey));
+      _entries = const <WasteEntry>[];
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Waste records cleared')));
+  }
+
+  void _scrollToLatestWaste() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
+  int get _totalItems => _countItems(_entries ?? const <WasteEntry>[]);
+
+  double get _fillLevel => (_totalItems / _binCapacity).clamp(0.0, 1.0);
+
+  static int _countItems(List<WasteEntry> entries) =>
+      entries.fold<int>(0, (sum, entry) => sum + entry.count);
+
+  static String _entryKey(WasteEntry entry) {
+    final eventId = entry.eventId;
+    if (eventId != null && eventId.isNotEmpty) {
+      return '$eventId:${entry.itemIndex}';
+    }
+    return '${entry.name}|${entry.classification}|${entry.count}|'
+        '${entry.asset}|${entry.imageUrl}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -36,23 +164,27 @@ class HomeDashboard extends StatelessWidget {
                 constraints: const BoxConstraints(maxWidth: 430),
                 child: CustomScrollView(
                   key: const Key('dashboard_scroll_view'),
+                  controller: _scrollController,
                   physics: const ClampingScrollPhysics(),
                   slivers: [
                     SliverPadding(
                       padding: EdgeInsets.fromLTRB(side, 4, side, 12),
                       sliver: SliverList.list(
                         children: [
-                          _TopBar(),
-                          SizedBox(height: 8),
-                          _Greeting(),
-                          SizedBox(height: 16),
-                          _DeviceCard(),
-                          SizedBox(height: 16),
+                          const _TopBar(),
+                          const SizedBox(height: 8),
+                          const _Greeting(),
+                          const SizedBox(height: 16),
+                          _DeviceCard(fillLevel: _fillLevel),
+                          const SizedBox(height: 16),
                           _WasteInventoryCard(
-                            repository: repository ?? AzureWasteRepository(),
+                            entries: _entries,
+                            loadError: _loadError,
+                            onRetry: _loadWaste,
+                            onClear: _confirmClearWaste,
                           ),
-                          SizedBox(height: 18),
-                          _RecyclingBanner(),
+                          const SizedBox(height: 18),
+                          const _RecyclingBanner(),
                         ],
                       ),
                     ),
@@ -72,40 +204,25 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
+    return const SizedBox(
       height: 38,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          _HeaderButton(
-            key: const Key('menu_button'),
-            icon: Icons.menu_rounded,
-            label: 'Menu',
-            onTap: () {},
-          ),
-          _HeaderButton(
-            key: const Key('notification_button'),
-            icon: Icons.notifications_none_rounded,
-            label: 'Notifications',
-            onTap: () {},
-          ),
-        ],
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: _HeaderButton(
+          key: Key('notification_button'),
+          icon: Icons.notifications_none_rounded,
+          label: 'Notifications',
+        ),
       ),
     );
   }
 }
 
 class _HeaderButton extends StatelessWidget {
-  const _HeaderButton({
-    super.key,
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
+  const _HeaderButton({super.key, required this.icon, required this.label});
 
   final IconData icon;
   final String label;
-  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -115,7 +232,7 @@ class _HeaderButton extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: InkResponse(
-          onTap: onTap,
+          onTap: () {},
           radius: 22,
           child: SizedBox(
             width: 38,
@@ -137,7 +254,7 @@ class _Greeting extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Hello, Rakesh 👋',
+          'Hello, User 👋',
           style: TextStyle(
             fontSize: 20,
             height: 1.15,
@@ -156,10 +273,25 @@ class _Greeting extends StatelessWidget {
 }
 
 class _DeviceCard extends StatelessWidget {
-  const _DeviceCard();
+  const _DeviceCard({required this.fillLevel});
+
+  final double fillLevel;
 
   @override
   Widget build(BuildContext context) {
+    final percentage = (fillLevel * 100).round();
+    final status = switch (fillLevel) {
+      0 => 'Empty',
+      >= .9 => 'Full',
+      >= .7 => 'Almost full',
+      _ => 'Normal',
+    };
+    final levelColor = fillLevel >= .9
+        ? const Color(0xFFFF4D4D)
+        : fillLevel >= .7
+        ? const Color(0xFFFFB020)
+        : AppColors.green;
+
     return SizedBox(
       key: const Key('device_card'),
       height: 180,
@@ -212,9 +344,10 @@ class _DeviceCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      '—',
-                      style: TextStyle(
+                    Text(
+                      '$percentage%',
+                      key: const Key('fill_level_percentage'),
+                      style: const TextStyle(
                         fontSize: 34,
                         height: 1,
                         fontWeight: FontWeight.w700,
@@ -222,14 +355,15 @@ class _DeviceCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 13),
-                    const _ProgressBar(value: .62),
+                    _ProgressBar(value: fillLevel, color: levelColor),
                     const SizedBox(height: 10),
                     Text(
-                      'Normal',
+                      status,
+                      key: const Key('fill_level_status'),
                       style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
-                        color: Colors.white.withValues(alpha: .82),
+                        color: levelColor,
                       ),
                     ),
                   ],
@@ -260,9 +394,10 @@ class _StatusDot extends StatelessWidget {
 }
 
 class _ProgressBar extends StatelessWidget {
-  const _ProgressBar({required this.value});
+  const _ProgressBar({required this.value, required this.color});
 
   final double value;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
@@ -271,110 +406,98 @@ class _ProgressBar extends StatelessWidget {
       child: SizedBox(
         height: 8,
         child: LinearProgressIndicator(
+          key: const Key('fill_level_progress'),
           value: value,
           backgroundColor: const Color(0xFF1A313B),
-          valueColor: const AlwaysStoppedAnimation(AppColors.green),
+          valueColor: AlwaysStoppedAnimation(color),
         ),
       ),
     );
   }
 }
 
-class _WasteInventoryCard extends StatefulWidget {
-  const _WasteInventoryCard({required this.repository});
+class _WasteInventoryCard extends StatelessWidget {
+  const _WasteInventoryCard({
+    required this.entries,
+    required this.loadError,
+    required this.onRetry,
+    required this.onClear,
+  });
 
-  final WasteRepository repository;
-
-  @override
-  State<_WasteInventoryCard> createState() => _WasteInventoryCardState();
-}
-
-class _WasteInventoryCardState extends State<_WasteInventoryCard> {
-  late Future<List<WasteEntry>> _entries;
-
-  @override
-  void initState() {
-    super.initState();
-    _entries = widget.repository.fetchWaste();
-  }
+  final List<WasteEntry>? entries;
+  final Object? loadError;
+  final Future<void> Function() onRetry;
+  final Future<void> Function() onClear;
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<WasteEntry>>(
-      future: _entries,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const _WasteInventoryShell(
-            total: '—',
-            children: [
-              SizedBox(
-                height: 120,
-                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-              ),
-            ],
-          );
-        }
-        if (snapshot.hasError) {
-          return _WasteInventoryShell(
-            total: '0',
-            children: [
-              const SizedBox(height: 16),
-              Text(
-                'Unable to load verified waste',
-                style: TextStyle(color: Colors.white.withValues(alpha: .75)),
-              ),
-              const SizedBox(height: 4),
-              TextButton(
-                onPressed: () => setState(() {
-                  _entries = widget.repository.fetchWaste();
-                }),
-                child: const Text('Retry'),
-              ),
-              const SizedBox(height: 8),
-            ],
-          );
-        }
-        final entries = snapshot.data ?? const <WasteEntry>[];
-        if (entries.isEmpty) {
-          return const _WasteInventoryShell(
-            total: '0',
-            children: [
-              SizedBox(
-                height: 96,
-                child: Center(child: Text('No verified waste detected yet')),
-              ),
-            ],
-          );
-        }
-        return _WasteInventoryShell(
-          total: entries
-              .fold<int>(0, (sum, entry) => sum + entry.count)
-              .toString(),
-          children: [
-            for (var index = 0; index < entries.length; index++) ...[
-              _WasteRow(entry: entries[index]),
-              if (index != entries.length - 1)
-                const Padding(
-                  padding: EdgeInsets.only(left: 64, right: 14),
-                  child: Divider(
-                    height: 1,
-                    thickness: 1,
-                    color: AppColors.divider,
-                  ),
-                ),
-            ],
-          ],
-        );
-      },
+    final wasteEntries = entries;
+    if (wasteEntries == null && loadError == null) {
+      return const _WasteInventoryShell(
+        total: '—',
+        children: [
+          SizedBox(
+            height: 120,
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          ),
+        ],
+      );
+    }
+    if (wasteEntries == null && loadError != null) {
+      return _WasteInventoryShell(
+        total: '0',
+        children: [
+          const SizedBox(height: 16),
+          Text(
+            'Unable to load verified waste',
+            style: TextStyle(color: Colors.white.withValues(alpha: .75)),
+          ),
+          const SizedBox(height: 4),
+          TextButton(onPressed: onRetry, child: const Text('Retry')),
+          const SizedBox(height: 8),
+        ],
+      );
+    }
+    if (wasteEntries!.isEmpty) {
+      return const _WasteInventoryShell(
+        total: '0',
+        children: [
+          SizedBox(
+            height: 96,
+            child: Center(child: Text('No verified waste detected yet')),
+          ),
+        ],
+      );
+    }
+    return _WasteInventoryShell(
+      total: wasteEntries
+          .fold<int>(0, (sum, entry) => sum + entry.count)
+          .toString(),
+      onClear: onClear,
+      children: [
+        for (var index = 0; index < wasteEntries.length; index++) ...[
+          _WasteRow(entry: wasteEntries[index]),
+          if (index != wasteEntries.length - 1)
+            const Padding(
+              padding: EdgeInsets.only(left: 64, right: 14),
+              child: Divider(height: 1, thickness: 1, color: AppColors.divider),
+            ),
+        ],
+      ],
     );
   }
 }
 
 class _WasteInventoryShell extends StatelessWidget {
-  const _WasteInventoryShell({required this.children, required this.total});
+  const _WasteInventoryShell({
+    required this.total,
+    this.onClear,
+    required this.children,
+  });
 
   final List<Widget> children;
   final String total;
+  final Future<void> Function()? onClear;
 
   @override
   Widget build(BuildContext context) {
@@ -384,7 +507,7 @@ class _WasteInventoryShell extends StatelessWidget {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 13, 14, 9),
+            padding: const EdgeInsets.fromLTRB(14, 5, 8, 4),
             child: Row(
               children: [
                 const Expanded(
@@ -392,6 +515,14 @@ class _WasteInventoryShell extends StatelessWidget {
                     'Waste Inside Dustbin',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
+                ),
+                IconButton(
+                  key: const Key('clear_all_waste_button'),
+                  tooltip: 'Clear all waste',
+                  onPressed: onClear,
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 19,
+                  icon: const Icon(Icons.delete_sweep_outlined),
                 ),
                 const _StatusDot(),
                 const SizedBox(width: 5),
@@ -732,8 +863,6 @@ class _DashboardNavigation extends StatelessWidget {
   static const items = <({String label, IconData icon})>[
     (label: 'Home', icon: Icons.home_outlined),
     (label: 'History', icon: Icons.history_rounded),
-    (label: 'Analytics', icon: Icons.insights_outlined),
-    (label: 'Profile', icon: Icons.person_outline_rounded),
   ];
 
   @override
