@@ -10,12 +10,9 @@ abstract interface class WasteRepository {
   Future<List<WasteEntry>> fetchWaste();
 }
 
-class AzureWasteRepository implements WasteRepository {
-  AzureWasteRepository({
-    this.baseUrl = const String.fromEnvironment(
-      'AZURE_WASTE_API_BASE',
-      defaultValue: 'https://waste-ai-verifier2-617db57026.azurewebsites.net',
-    ),
+class AwsWasteRepository implements WasteRepository {
+  AwsWasteRepository({
+    this.baseUrl = const String.fromEnvironment('AWS_WASTE_API_BASE'),
     http.Client? client,
   }) : _client = client ?? http.Client();
 
@@ -24,17 +21,25 @@ class AzureWasteRepository implements WasteRepository {
 
   @override
   Future<List<WasteEntry>> fetchWaste() async {
-    final uri = Uri.parse('$baseUrl/api/waste?limit=100');
+    final normalizedBaseUrl = baseUrl.trim().replaceFirst(RegExp(r'/+$'), '');
+    if (normalizedBaseUrl.isEmpty) {
+      throw StateError(
+        'AWS_WASTE_API_BASE is not configured. Deploy the AWS backend and '
+        'run with --dart-define=AWS_WASTE_API_BASE=<function-url>.',
+      );
+    }
+
+    final uri = Uri.parse('$normalizedBaseUrl/api/waste?limit=100');
     final response = await _client
-        .get(uri)
+        .get(uri, headers: const {'Accept': 'application/json'})
         .timeout(const Duration(seconds: 20));
     if (response.statusCode != 200) {
-      throw StateError('Azure waste API returned HTTP ${response.statusCode}');
+      throw StateError('AWS waste API returned HTTP ${response.statusCode}');
     }
 
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('Azure waste API returned invalid JSON');
+      throw const FormatException('AWS waste API returned invalid JSON');
     }
     final records = decoded['items'];
     if (records is! List) return const <WasteEntry>[];
@@ -43,9 +48,11 @@ class AzureWasteRepository implements WasteRepository {
     for (final record in records.whereType<Map<String, dynamic>>()) {
       final eventId = record['event_id']?.toString() ?? '';
       final imagePath = record['image_url']?.toString() ?? '';
-      final imageUrl = imagePath.startsWith('http')
+      final imageUrl = imagePath.isEmpty
+          ? null
+          : imagePath.startsWith('http')
           ? imagePath
-          : '$baseUrl${imagePath.startsWith('/') ? imagePath : '/$imagePath'}';
+          : '$normalizedBaseUrl${imagePath.startsWith('/') ? imagePath : '/$imagePath'}';
       final items = record['items'];
       if (items is! List || items.isEmpty) continue;
 
@@ -70,7 +77,6 @@ class AzureWasteRepository implements WasteRepository {
                 ? '$recyclingConfidence% Recyclable'
                 : 'Not recyclable',
             count: 1,
-            asset: null,
             imageUrl: imageUrl,
             accent: recyclable
                 ? const Color(0xFF2DC65D)

@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Smart Dustbin serverless backend
+
+Resources:
+  WasteTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: record_type
+          AttributeType: S
+        - AttributeName: sort_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: record_type
+          KeyType: HASH
+        - AttributeName: sort_key
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  IngestSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: API key used by the Smart Dustbin capture service
+      GenerateSecretString:
+        ExcludePunctuation: true
+        PasswordLength: 40
+
+  WasteFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: WasteDataAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                Resource: !GetAtt WasteTable.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref IngestSecret
+
+  WasteFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: app.handler
+      Role: !GetAtt WasteFunctionRole.Arn
+      Timeout: 15
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref WasteTable
+          INGEST_SECRET_ARN: !Ref IngestSecret
+      Code:
+        S3Bucket: __CODE_S3_BUCKET__
+        S3Key: __CODE_S3_KEY__
+
+  WasteFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt WasteFunction.Arn
+      AuthType: NONE
+      Cors:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - accept
+          - content-type
+          - x-api-key
+        MaxAge: 300
+
+  WasteFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WasteFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  WasteFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WasteFunction
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
+Outputs:
+  ApiBaseUrl:
+    Description: Pass this URL as AWS_WASTE_API_BASE to Flutter
+    Value: !GetAtt WasteFunctionUrl.FunctionUrl
+  IngestSecretArn:
+    Description: Retrieve this secret when configuring the capture service
+    Value: !Ref IngestSecret
+  WasteTableName:
+    Value: !Ref WasteTable

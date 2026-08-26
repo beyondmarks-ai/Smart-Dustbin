@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:smart_dustbin/azure_waste_repository.dart';
+import 'package:smart_dustbin/aws_waste_repository.dart';
 import 'package:smart_dustbin/dashboard_data.dart';
 import 'package:smart_dustbin/main.dart';
 
@@ -56,8 +56,16 @@ void main() {
           .value,
       closeTo(.66, .001),
     );
-    expect(find.text('Waste Inside Dustbin'), findsOneWidget);
+    expect(find.byKey(const Key('dustbin_image')), findsNothing);
+    expect(find.byKey(const Key('recycling_banner')), findsNothing);
 
+    await tester.drag(
+      find.byKey(const Key('dashboard_scroll_view')),
+      const Offset(0, -500),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Waste Inside Dustbin'), findsOneWidget);
     for (final label in const [
       'Plastic Bottle',
       'Paper',
@@ -67,11 +75,30 @@ void main() {
     ]) {
       expect(find.text(label), findsOneWidget);
     }
-
-    expect(find.text('33'), findsOneWidget);
-    expect(find.text('AI-verified waste\ninsights only.'), findsOneWidget);
-    expect(find.byKey(const Key('dustbin_image')), findsOneWidget);
+    expect(find.byKey(const Key('waste_inventory_total')), findsOneWidget);
     expect(find.byKey(const Key('clear_all_waste_button')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('navigation_insights')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('insights_scroll_view')), findsOneWidget);
+    expect(find.byKey(const Key('waste_total_items_chart')), findsOneWidget);
+    expect(find.byKey(const Key('waste_statistics_card')), findsOneWidget);
+    expect(find.byKey(const Key('waste_category_chart')), findsOneWidget);
+    expect(find.byKey(const Key('waste_composition_chart')), findsOneWidget);
+    expect(find.text('Waste Statistics'), findsOneWidget);
+    expect(find.text('Recyclable'), findsWidgets);
+    expect(find.text('Organic'), findsWidgets);
+    expect(find.text('Non-recyclable'), findsWidgets);
+    expect(find.byKey(const Key('environmental_impact_card')), findsOneWidget);
+    expect(find.text('Environmental Impact'), findsOneWidget);
+    expect(find.text('70%'), findsOneWidget);
+    expect(find.text('1.8 kg'), findsOneWidget);
+    expect(find.byKey(const Key('date_wise_waste_chart_card')), findsOneWidget);
+    expect(find.byKey(const Key('date_wise_waste_chart')), findsOneWidget);
+    expect(find.text('Waste Trend'), findsOneWidget);
+    expect(find.text('Recyclable vs non-recyclable by date'), findsOneWidget);
+    expect(find.text('Detection date'), findsOneWidget);
   });
 
   testWidgets('clear-all icon confirms and resets waste and fill level', (
@@ -79,6 +106,11 @@ void main() {
   ) async {
     await pumpDashboard(tester);
 
+    await tester.drag(
+      find.byKey(const Key('dashboard_scroll_view')),
+      const Offset(0, -1200),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('clear_all_waste_button')));
     await tester.pumpAndSettle();
 
@@ -87,30 +119,37 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('No verified waste detected yet'), findsOneWidget);
-    expect(find.text('0%'), findsOneWidget);
+    final scrollView = tester.widget<CustomScrollView>(
+      find.byKey(const Key('dashboard_scroll_view')),
+    );
+    scrollView.controller!.jumpTo(0);
+    await tester.pump();
+    expect(find.byKey(const Key('fill_level_percentage')), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('fill_level_percentage'))).data,
+      '0%',
+    );
     expect(find.text('Empty'), findsOneWidget);
     expect(find.text('Waste records cleared'), findsOneWidget);
   });
 
-  testWidgets('keeps only Home and History in the fixed footer', (
+  testWidgets('keeps Home, Insights and History in the fixed footer', (
     tester,
   ) async {
     await pumpDashboard(tester, size: const Size(360, 800));
 
     expect(tester.takeException(), isNull);
     expect(find.text('Home'), findsOneWidget);
+    expect(find.text('Insights'), findsOneWidget);
     expect(find.text('History'), findsOneWidget);
     expect(find.text('Analytics'), findsNothing);
     expect(find.text('Profile'), findsNothing);
     expect(find.byKey(const Key('bottom_navigation')), findsOneWidget);
 
-    await tester.drag(
-      find.byKey(const Key('dashboard_scroll_view')),
-      const Offset(0, -300),
-    );
+    await tester.tap(find.byKey(const Key('navigation_insights')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Tap verified waste for details.'), findsOneWidget);
+    expect(find.byKey(const Key('insights_scroll_view')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -142,19 +181,37 @@ void main() {
 
     expect(find.text('New Glass Jar'), findsOneWidget);
     expect(scrollView.controller!.offset, greaterThan(0));
+    scrollView.controller!.jumpTo(0);
+    await tester.pump();
     expect(find.text('68%'), findsOneWidget);
   });
 
-  testWidgets('notification and footer controls provide tap targets', (
+  testWidgets('footer switches between Home, Insights and History', (
     tester,
   ) async {
     await pumpDashboard(tester);
 
     await tester.tap(find.byKey(const Key('notification_button')));
-    await tester.tap(find.text('History'));
-    await tester.pump();
+    await tester.tap(find.byKey(const Key('navigation_insights')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('insights_scroll_view')), findsOneWidget);
+    expect(find.text('Waste Statistics'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('navigation_history')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Waste History'), findsOneWidget);
+    expect(find.text('5 records'), findsOneWidget);
+    expect(find.text('33 total items detected'), findsOneWidget);
+    expect(find.byKey(const Key('history_entry_0')), findsOneWidget);
+    expect(find.byKey(const Key('dashboard_scroll_view')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('navigation_home')));
+    await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('Home'), findsOneWidget);
+    expect(find.byKey(const Key('dashboard_scroll_view')), findsOneWidget);
+    expect(find.text('Waste History'), findsNothing);
   });
 }

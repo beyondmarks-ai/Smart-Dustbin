@@ -32,12 +32,15 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+/.aws-build/
 /test/failures/
 
 # Local configuration and secrets
 .env
 .env.*
 !.env.example
+arduino/**/aws_config.local.h
+arduino/**/aws_config.h
 *.pem
 *.p12
 *.pfx
