@@ -12,7 +12,10 @@ abstract interface class WasteRepository {
 
 class AwsWasteRepository implements WasteRepository {
   AwsWasteRepository({
-    this.baseUrl = const String.fromEnvironment('AWS_WASTE_API_BASE'),
+    this.baseUrl = const String.fromEnvironment(
+      'AZURE_WASTE_API_BASE',
+      defaultValue: 'https://smart-dustbin-ai-617db5.azurewebsites.net',
+    ),
     http.Client? client,
   }) : _client = client ?? http.Client();
 
@@ -24,8 +27,8 @@ class AwsWasteRepository implements WasteRepository {
     final normalizedBaseUrl = baseUrl.trim().replaceFirst(RegExp(r'/+$'), '');
     if (normalizedBaseUrl.isEmpty) {
       throw StateError(
-        'AWS_WASTE_API_BASE is not configured. Deploy the AWS backend and '
-        'run with --dart-define=AWS_WASTE_API_BASE=<function-url>.',
+        'AZURE_WASTE_API_BASE is not configured. Build the app with '
+        '--dart-define=AZURE_WASTE_API_BASE=<function-url>.',
       );
     }
 
@@ -34,12 +37,12 @@ class AwsWasteRepository implements WasteRepository {
         .get(uri, headers: const {'Accept': 'application/json'})
         .timeout(const Duration(seconds: 20));
     if (response.statusCode != 200) {
-      throw StateError('AWS waste API returned HTTP ${response.statusCode}');
+      throw StateError('Waste API returned HTTP ${response.statusCode}');
     }
 
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('AWS waste API returned invalid JSON');
+      throw const FormatException('Waste API returned invalid JSON');
     }
     final records = decoded['items'];
     if (records is! List) return const <WasteEntry>[];
@@ -47,12 +50,21 @@ class AwsWasteRepository implements WasteRepository {
     final result = <WasteEntry>[];
     for (final record in records.whereType<Map<String, dynamic>>()) {
       final eventId = record['event_id']?.toString() ?? '';
+      final status = record['status']?.toString() ?? 'unknown';
+      if (status == 'rejected') continue;
+      final needsReview = status == 'review';
       final imagePath = record['image_url']?.toString() ?? '';
       final imageUrl = imagePath.isEmpty
           ? null
           : imagePath.startsWith('http')
           ? imagePath
           : '$normalizedBaseUrl${imagePath.startsWith('/') ? imagePath : '/$imagePath'}';
+      final location = record['detection_location'];
+      final locationMap = location is Map<String, dynamic>
+          ? location
+          : const <String, dynamic>{};
+      final latitude = _asDouble(locationMap['latitude']);
+      final longitude = _asDouble(locationMap['longitude']);
       final items = record['items'];
       if (items is! List || items.isEmpty) continue;
 
@@ -73,15 +85,20 @@ class AwsWasteRepository implements WasteRepository {
         result.add(
           WasteEntry(
             name: name,
-            classification: recyclable
+            classification: needsReview
+                ? 'Needs review · ${_asPercent(record['waste_confidence'])}% confidence'
+                : recyclable
                 ? '$recyclingConfidence% Recyclable'
                 : 'Not recyclable',
             count: 1,
             imageUrl: imageUrl,
-            accent: recyclable
+            accent: needsReview
+                ? const Color(0xFFB66A00)
+                : recyclable
                 ? const Color(0xFF2DC65D)
                 : const Color(0xFFFF4D4D),
             eventId: eventId,
+            verificationStatus: status,
             confidence: _asPercent(record['waste_confidence']),
             material: material,
             category: category,
@@ -94,6 +111,12 @@ class AwsWasteRepository implements WasteRepository {
             tags: tags,
             capturedAt: record['captured_at']?.toString(),
             evidenceSummary: record['evidence_summary']?.toString() ?? '',
+            latitude: latitude,
+            longitude: longitude,
+            locationAccuracy: _asDouble(locationMap['accuracy_m']),
+            locationLabel: locationMap['label']?.toString() ?? '',
+            locationAddress: locationMap['address']?.toString() ?? '',
+            deviceId: record['device_id']?.toString() ?? '',
             itemIndex: index,
           ),
         );
@@ -108,6 +131,9 @@ class AwsWasteRepository implements WasteRepository {
         : double.tryParse('$value') ?? 0;
     return (number <= 1 ? number * 100 : number).round().toString();
   }
+
+  static double? _asDouble(Object? value) =>
+      value is num ? value.toDouble() : double.tryParse('$value');
 
   static List<String> _strings(Object? value) => value is List
       ? value

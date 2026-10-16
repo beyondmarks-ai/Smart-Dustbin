@@ -41,6 +41,20 @@ migrate_working_dir/
 !.env.example
 arduino/**/aws_config.local.h
 arduino/**/aws_config.h
+arduino/**/azure_config.h
+arduino/**/wifi_config.h
+**/local.settings.json
+**/.venv/
+**/__pycache__/
+*.zip
+*.apk
+*.aab
+*.bin
+*.elf
+*.hex
+# Local reference documents, not application source
+/IEEE-Nidhi 2026.doc
+/Sample Final Project Report.docx
 *.pem
 *.p12
 *.pfx

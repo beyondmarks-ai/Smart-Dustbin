@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "WASTE_STORAGE_ACCOUNT_URL": "https://YOUR_STORAGE.blob.core.windows.net",
+    "RAW_CONTAINER": "waste-raw",
+    "ANALYSIS_CONTAINER": "waste-analysis",
+    "VERIFIED_CONTAINER": "verified-waste",
+    "AZURE_OPENAI_ENDPOINT": "https://YOUR_OPENAI.openai.azure.com",
+    "AZURE_OPENAI_DEPLOYMENT": "YOUR_VISION_DEPLOYMENT",
+    "DEVICE_INGEST_KEY": "GENERATE_A_RANDOM_SECRET",
+    "WASTE_CONFIDENCE_THRESHOLD": "0.80",
+    "WASTE_MIN_FRAMES": "2",
+    "AZURE_VISION_DETAIL": "high"
+  }
+}

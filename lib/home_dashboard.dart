@@ -6,21 +6,28 @@ import 'package:flutter/material.dart';
 import 'aws_waste_repository.dart';
 
 import 'dashboard_data.dart';
+import 'report_exporter.dart';
+import 'app_preferences.dart';
+import 'feature_pages.dart';
+import 'detection_location.dart';
 
 abstract final class AppColors {
-  static const background = Color(0xFFF7F5EE);
-  static const card = Color(0xFFFFFEF9);
-  static const cardDeep = Color(0xFFF1EFE7);
-  static const cardBorder = Color(0xFFDEDDD3);
+  static bool dark = false;
+  static Color get background => dark ? Color(0xFF101C16) : Color(0xFFF7F5EE);
+  static Color get card => dark ? Color(0xFF1A2921) : Color(0xFFFFFEF9);
+  static Color get cardDeep => dark ? Color(0xFF22352A) : Color(0xFFF1EFE7);
+  static Color get cardBorder => dark ? Color(0xFF3C5042) : Color(0xFFDEDDD3);
   static const green = Color(0xFF2C9851);
-  static const lime = Color(0xFF247D43);
-  static const muted = Color(0xFF6F7973);
-  static const textPrimary = Color(0xFF1D2B24);
-  static const divider = Color(0xFFE8E5DB);
+  static Color get lime => dark ? Color(0xFF78D69A) : Color(0xFF247D43);
+  static Color get muted => dark ? Color(0xFFADBFB2) : Color(0xFF6F7973);
+  static Color get textPrimary => dark ? Color(0xFFEDF4EF) : Color(0xFF1D2B24);
+  static Color get divider => dark ? Color(0xFF34483B) : Color(0xFFE8E5DB);
 }
 
 class HomeDashboard extends StatefulWidget {
-  const HomeDashboard({super.key, this.repository});
+  const HomeDashboard({super.key, this.repository, this.onLogout});
+
+  final VoidCallback? onLogout;
 
   final WasteRepository? repository;
 
@@ -30,20 +37,23 @@ class HomeDashboard extends StatefulWidget {
 
 class _HomeDashboardState extends State<HomeDashboard> {
   static const _refreshInterval = Duration(seconds: 10);
-  static const _binCapacity = 50;
 
   final ScrollController _scrollController = ScrollController();
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final Set<String> _clearedEntryKeys = <String>{};
   Timer? _refreshTimer;
   late WasteRepository _repository;
   List<WasteEntry>? _entries;
   Object? _loadError;
+  bool _loadInProgress = false;
+  int _loadVersion = 0;
   int _selectedNavigationIndex = 0;
 
   @override
   void initState() {
     super.initState();
     _repository = widget.repository ?? AwsWasteRepository();
+    appPreferences.addListener(_preferencesChanged);
     _loadWaste();
     _refreshTimer = Timer.periodic(
       _refreshInterval,
@@ -55,6 +65,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
   void didUpdateWidget(covariant HomeDashboard oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.repository != widget.repository) {
+      _loadVersion++;
+      _loadInProgress = false;
       _repository = widget.repository ?? AwsWasteRepository();
       _clearedEntryKeys.clear();
       _entries = null;
@@ -62,21 +74,29 @@ class _HomeDashboardState extends State<HomeDashboard> {
     }
   }
 
+  void _preferencesChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    appPreferences.removeListener(_preferencesChanged);
     _refreshTimer?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
 
   Future<void> _loadWaste({bool scrollToNewWaste = false}) async {
+    if (_loadInProgress) return;
+    _loadInProgress = true;
+    final requestVersion = ++_loadVersion;
     final previousTotal = _totalItems;
     try {
       final fetchedEntries = await _repository.fetchWaste();
       final visibleEntries = fetchedEntries
           .where((entry) => !_clearedEntryKeys.contains(_entryKey(entry)))
           .toList(growable: false);
-      if (!mounted) return;
+      if (!mounted || requestVersion != _loadVersion) return;
 
       final nextTotal = _countItems(visibleEntries);
       setState(() {
@@ -87,25 +107,27 @@ class _HomeDashboardState extends State<HomeDashboard> {
         _scrollToLatestWaste();
       }
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || requestVersion != _loadVersion) return;
       setState(() => _loadError = error);
+    } finally {
+      if (requestVersion == _loadVersion) _loadInProgress = false;
     }
   }
 
   Future<void> _confirmClearWaste() async {
-    if ((_entries ?? const <WasteEntry>[]).isEmpty) return;
+    if ((_entries ?? <WasteEntry>[]).isEmpty) return;
     final shouldClear = await showDialog<bool>(
       context: context,
       builder: (context) => Dialog(
         backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+        insetPadding: EdgeInsets.symmetric(horizontal: 28),
         child: Container(
-          padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
+          padding: EdgeInsets.fromLTRB(22, 22, 22, 18),
           decoration: BoxDecoration(
             color: AppColors.cardDeep,
             borderRadius: BorderRadius.circular(24),
             border: Border.all(color: AppColors.cardBorder),
-            boxShadow: const [
+            boxShadow: [
               BoxShadow(
                 color: Color(0x26000000),
                 blurRadius: 32,
@@ -120,22 +142,22 @@ class _HomeDashboardState extends State<HomeDashboard> {
                 width: 54,
                 height: 54,
                 decoration: BoxDecoration(
-                  color: const Color(0xFFFF4D4D).withValues(alpha: .12),
+                  color: Color(0xFFFF4D4D).withValues(alpha: .12),
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.delete_sweep_outlined,
                   color: Color(0xFFFF6868),
                   size: 27,
                 ),
               ),
-              const SizedBox(height: 16),
-              const Text(
+              SizedBox(height: 16),
+              Text(
                 'Clear all waste?',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
               ),
-              const SizedBox(height: 8),
-              const Text(
+              SizedBox(height: 8),
+              Text(
                 'This removes every waste record currently shown on your dashboard.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -144,34 +166,34 @@ class _HomeDashboardState extends State<HomeDashboard> {
                   height: 1.45,
                 ),
               ),
-              const SizedBox(height: 22),
+              SizedBox(height: 22),
               Row(
                 children: [
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () => Navigator.pop(context, false),
                       style: OutlinedButton.styleFrom(
-                        minimumSize: const Size.fromHeight(46),
-                        side: const BorderSide(color: AppColors.cardBorder),
+                        minimumSize: Size.fromHeight(46),
+                        side: BorderSide(color: AppColors.cardBorder),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(13),
                         ),
                       ),
-                      child: const Text('Cancel'),
+                      child: Text('Cancel'),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  SizedBox(width: 10),
                   Expanded(
                     child: FilledButton(
                       onPressed: () => Navigator.pop(context, true),
                       style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(46),
-                        backgroundColor: const Color(0xFFE5484D),
+                        minimumSize: Size.fromHeight(46),
+                        backgroundColor: Color(0xFFE5484D),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(13),
                         ),
                       ),
-                      child: const Text('Clear all'),
+                      child: Text('Clear all'),
                     ),
                   ),
                 ],
@@ -185,11 +207,11 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
     setState(() {
       _clearedEntryKeys.addAll(_entries!.map(_entryKey));
-      _entries = const <WasteEntry>[];
+      _entries = <WasteEntry>[];
     });
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Waste records cleared')));
+    ).showSnackBar(SnackBar(content: Text('Waste records cleared')));
   }
 
   void _scrollToLatestWaste() {
@@ -197,15 +219,46 @@ class _HomeDashboardState extends State<HomeDashboard> {
       if (!mounted || !_scrollController.hasClients) return;
       _scrollController.animateTo(
         _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 450),
+        duration: Duration(milliseconds: 450),
         curve: Curves.easeOutCubic,
       );
     });
   }
 
-  int get _totalItems => _countItems(_entries ?? const <WasteEntry>[]);
+  int get _totalItems => _countItems(_entries ?? <WasteEntry>[]);
 
-  double get _fillLevel => (_totalItems / _binCapacity).clamp(0.0, 1.0);
+  double get _fillLevel {
+    final reset = appPreferences.emptiedAt;
+    final entries = (_entries ?? <WasteEntry>[]).where((entry) {
+      if (reset == null) return true;
+      final captured = DateTime.tryParse(entry.capturedAt ?? '');
+      return captured != null && captured.isAfter(reset);
+    }).toList();
+    return (_countItems(entries) / appPreferences.capacity).clamp(0.0, 1.0);
+  }
+
+  Future<void> _emptyBin() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Has the bin been emptied?'),
+        content: Text(
+          'Reset the estimated fill level to zero. All detection history and reports will be kept.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('Reset fill level'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await appPreferences.emptyBin();
+  }
 
   static int _countItems(List<WasteEntry> entries) =>
       entries.fold<int>(0, (sum, entry) => sum + entry.count);
@@ -224,37 +277,121 @@ class _HomeDashboardState extends State<HomeDashboard> {
     setState(() => _selectedNavigationIndex = index);
   }
 
+  Future<void> _openShareReport() async {
+    final period = await showModalBottomSheet<_ReportPeriod>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _ShareReportSheet(),
+    );
+    if (period == null || !mounted) return;
+    final entries = _entries ?? <WasteEntry>[];
+    try {
+      await WasteReportExporter.createAndShare(
+        entries: _filterReportEntries(entries, period),
+        periodLabel: period.label,
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create the waste report.')),
+        );
+      }
+    }
+  }
+
+  List<WasteEntry> _filterReportEntries(
+    List<WasteEntry> entries,
+    _ReportPeriod period,
+  ) {
+    if (period == _ReportPeriod.all) return entries;
+    final start = DateTime.now().subtract(Duration(days: period.days));
+    return entries.where((entry) {
+      final captured = DateTime.tryParse(entry.capturedAt ?? '');
+      return captured == null || captured.isAfter(start);
+    }).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: _scaffoldKey,
       backgroundColor: AppColors.background,
+      drawer: _DashboardDrawer(
+        selectedIndex: _selectedNavigationIndex,
+        onLogout: () {
+          Navigator.pop(context);
+          widget.onLogout?.call();
+        },
+        onSelected: (index) {
+          Navigator.pop(context);
+          _selectDestination(index);
+        },
+      ),
       bottomNavigationBar: _DashboardNavigation(
         selectedIndex: _selectedNavigationIndex,
         onSelected: _selectDestination,
       ),
       body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 220),
+        duration: Duration(milliseconds: 220),
         switchInCurve: Curves.easeOutCubic,
         switchOutCurve: Curves.easeInCubic,
         child: switch (_selectedNavigationIndex) {
           0 => _HomeView(
-            key: const ValueKey('home_destination'),
+            key: ValueKey('home_destination'),
             scrollController: _scrollController,
             fillLevel: _fillLevel,
             entries: _entries,
             loadError: _loadError,
             onRetry: _loadWaste,
             onClear: _confirmClearWaste,
+            onMenu: () => _scaffoldKey.currentState?.openDrawer(),
+            onShare: _openShareReport,
           ),
           1 => _InsightsView(
-            key: const ValueKey('insights_destination'),
-            entries: _entries ?? const <WasteEntry>[],
+            key: ValueKey('insights_destination'),
+            entries: _entries ?? <WasteEntry>[],
+            onMenu: () => _scaffoldKey.currentState?.openDrawer(),
           ),
-          _ => _HistoryView(
-            key: const ValueKey('history_destination'),
+          2 => _HistoryView(
+            key: ValueKey('history_destination'),
             entries: _entries,
             loadError: _loadError,
             onRetry: _loadWaste,
+            onMenu: () => _scaffoldKey.currentState?.openDrawer(),
+          ),
+          _ => SafeArea(
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Open navigation',
+                      onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                      icon: Icon(Icons.menu_rounded),
+                    ),
+                    Text(
+                      'EcoSort AI',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+                Expanded(
+                  child: switch (_selectedNavigationIndex) {
+                    3 => LocationPage(entries: _entries ?? []),
+                    4 => FeedbackPage(),
+                    _ => SettingsPage(
+                      cloudOnline: _loadError == null && _entries != null,
+                      checking: _loadError == null && _entries == null,
+                      onRefresh: _loadWaste,
+                      onEmpty: _emptyBin,
+                    ),
+                  },
+                ),
+              ],
+            ),
           ),
         },
       ),
@@ -271,6 +408,8 @@ class _HomeView extends StatelessWidget {
     required this.loadError,
     required this.onRetry,
     required this.onClear,
+    required this.onMenu,
+    required this.onShare,
   });
 
   final ScrollController scrollController;
@@ -279,6 +418,8 @@ class _HomeView extends StatelessWidget {
   final Object? loadError;
   final Future<void> Function() onRetry;
   final Future<void> Function() onClear;
+  final VoidCallback onMenu;
+  final VoidCallback onShare;
 
   @override
   Widget build(BuildContext context) {
@@ -289,22 +430,22 @@ class _HomeView extends StatelessWidget {
           final side = constraints.maxWidth < 370 ? 10.0 : 12.0;
           return Center(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 430),
+              constraints: BoxConstraints(maxWidth: 430),
               child: CustomScrollView(
-                key: const Key('dashboard_scroll_view'),
+                key: Key('dashboard_scroll_view'),
                 controller: scrollController,
-                physics: const ClampingScrollPhysics(),
+                physics: ClampingScrollPhysics(),
                 slivers: [
                   SliverPadding(
                     padding: EdgeInsets.fromLTRB(side, 4, side, 18),
                     sliver: SliverList.list(
                       children: [
-                        const _TopBar(),
-                        const SizedBox(height: 8),
-                        const _Greeting(),
-                        const SizedBox(height: 16),
+                        _TopBar(onMenu: onMenu, onShare: onShare),
+                        SizedBox(height: 8),
+                        _Greeting(),
+                        SizedBox(height: 16),
                         _DeviceCard(fillLevel: fillLevel),
-                        const SizedBox(height: 16),
+                        SizedBox(height: 16),
                         _WasteInventoryCard(
                           entries: entries,
                           loadError: loadError,
@@ -325,9 +466,10 @@ class _HomeView extends StatelessWidget {
 }
 
 class _InsightsView extends StatelessWidget {
-  const _InsightsView({super.key, required this.entries});
+  const _InsightsView({super.key, required this.entries, required this.onMenu});
 
   final List<WasteEntry> entries;
+  final VoidCallback onMenu;
 
   @override
   Widget build(BuildContext context) {
@@ -335,17 +477,24 @@ class _InsightsView extends StatelessWidget {
       bottom: false,
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 430),
+          constraints: BoxConstraints(maxWidth: 430),
           child: CustomScrollView(
-            key: const Key('insights_scroll_view'),
-            physics: const ClampingScrollPhysics(),
+            key: Key('insights_scroll_view'),
+            physics: ClampingScrollPhysics(),
             slivers: [
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(12, 15, 12, 24),
+                padding: EdgeInsets.fromLTRB(12, 15, 12, 24),
                 sliver: SliverList.list(
                   children: [
-                    const Row(
+                    Row(
                       children: [
+                        _HeaderButton(
+                          key: Key('insights_menu_button'),
+                          icon: Icons.menu_rounded,
+                          label: 'Open navigation',
+                          onTap: onMenu,
+                        ),
+                        SizedBox(width: 8),
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -376,7 +525,7 @@ class _InsightsView extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 20),
+                    SizedBox(height: 20),
                     _WasteAnalyticsSection(entries: entries),
                   ],
                 ),
@@ -390,29 +539,66 @@ class _InsightsView extends StatelessWidget {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar();
+  const _TopBar({required this.onMenu, required this.onShare});
+
+  final VoidCallback onMenu;
+  final VoidCallback onShare;
 
   @override
   Widget build(BuildContext context) {
-    return const SizedBox(
-      height: 38,
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: _HeaderButton(
-          key: Key('notification_button'),
-          icon: Icons.notifications_none_rounded,
-          label: 'Notifications',
-        ),
+    return SizedBox(
+      height: 44,
+      child: Row(
+        children: [
+          _HeaderButton(
+            key: Key('menu_button'),
+            icon: Icons.menu_rounded,
+            label: 'Open navigation',
+            onTap: onMenu,
+          ),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'EcoSort AI',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+            ),
+          ),
+          SizedBox(
+            width: 118,
+            child: FilledButton.icon(
+              key: Key('share_report_button'),
+              onPressed: onShare,
+              icon: Icon(Icons.ios_share_rounded, size: 16),
+              label: Text('Share'),
+              style: FilledButton.styleFrom(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: Size(0, 38),
+                textStyle: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(21),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
 class _HeaderButton extends StatelessWidget {
-  const _HeaderButton({super.key, required this.icon, required this.label});
+  const _HeaderButton({
+    super.key,
+    required this.icon,
+    required this.label,
+    this.onTap,
+  });
 
   final IconData icon;
   final String label;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -422,7 +608,7 @@ class _HeaderButton extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: InkResponse(
-          onTap: () {},
+          onTap: onTap,
           radius: 22,
           child: SizedBox(
             width: 38,
@@ -440,7 +626,7 @@ class _Greeting extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
@@ -477,14 +663,14 @@ class _DeviceCard extends StatelessWidget {
       _ => 'Normal',
     };
     final levelColor = fillLevel >= .9
-        ? const Color(0xFFFF4D4D)
+        ? Color(0xFFFF4D4D)
         : fillLevel >= .7
-        ? const Color(0xFFFFB020)
+        ? Color(0xFFFFB020)
         : AppColors.green;
 
     return Container(
-      key: const Key('device_card'),
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 15),
+      key: Key('device_card'),
+      padding: EdgeInsets.fromLTRB(16, 16, 16, 15),
       decoration: _cardDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -498,14 +684,14 @@ class _DeviceCard extends StatelessWidget {
                   color: AppColors.green.withValues(alpha: .10),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.sensors_rounded,
                   color: AppColors.green,
                   size: 22,
                 ),
               ),
-              const SizedBox(width: 11),
-              const Expanded(
+              SizedBox(width: 11),
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -518,24 +704,21 @@ class _DeviceCard extends StatelessWidget {
                     ),
                     SizedBox(height: 3),
                     Text(
-                      'Live capacity monitor',
+                      'Estimated fill level',
                       style: TextStyle(color: AppColors.muted, fontSize: 11),
                     ),
                   ],
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
+                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: levelColor.withValues(alpha: .10),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
                   status,
-                  key: const Key('fill_level_status'),
+                  key: Key('fill_level_status'),
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
@@ -545,11 +728,11 @@ class _DeviceCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 20),
+          SizedBox(height: 20),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Fill Level',
                   style: TextStyle(
@@ -561,8 +744,8 @@ class _DeviceCard extends StatelessWidget {
               ),
               Text(
                 '$percentage%',
-                key: const Key('fill_level_percentage'),
-                style: const TextStyle(
+                key: Key('fill_level_percentage'),
+                style: TextStyle(
                   fontSize: 30,
                   height: 1,
                   fontWeight: FontWeight.w800,
@@ -571,10 +754,10 @@ class _DeviceCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 11),
+          SizedBox(height: 11),
           _ProgressBar(value: fillLevel, color: levelColor),
-          const SizedBox(height: 8),
-          const Row(
+          SizedBox(height: 8),
+          Row(
             children: [
               Text('0%', style: TextStyle(color: AppColors.muted, fontSize: 9)),
               Spacer(),
@@ -603,10 +786,7 @@ class _StatusDot extends StatelessWidget {
     return Container(
       width: 8,
       height: 8,
-      decoration: const BoxDecoration(
-        color: AppColors.green,
-        shape: BoxShape.circle,
-      ),
+      decoration: BoxDecoration(color: AppColors.green, shape: BoxShape.circle),
     );
   }
 }
@@ -624,9 +804,9 @@ class _ProgressBar extends StatelessWidget {
       child: SizedBox(
         height: 8,
         child: LinearProgressIndicator(
-          key: const Key('fill_level_progress'),
+          key: Key('fill_level_progress'),
           value: value,
-          backgroundColor: const Color(0xFFE7EAE4),
+          backgroundColor: Color(0xFFE7EAE4),
           valueColor: AlwaysStoppedAnimation(color),
         ),
       ),
@@ -686,13 +866,9 @@ class _WasteMetrics {
 
   List<({String label, int count, Color color})> get categories => [
     (label: 'Recyclable', count: recyclable, color: AppColors.green),
-    (label: 'Organic', count: organic, color: const Color(0xFFE6A43B)),
-    (
-      label: 'Non-recyclable',
-      count: nonRecyclable,
-      color: const Color(0xFFFF5D62),
-    ),
-    (label: 'Other', count: other, color: const Color(0xFF718996)),
+    (label: 'Organic', count: organic, color: Color(0xFFE6A43B)),
+    (label: 'Non-recyclable', count: nonRecyclable, color: Color(0xFFFF5D62)),
+    (label: 'Other', count: other, color: Color(0xFF718996)),
   ];
 }
 
@@ -707,13 +883,13 @@ class _WasteAnalyticsSection extends StatelessWidget {
     return Column(
       children: [
         Container(
-          key: const Key('waste_statistics_card'),
-          padding: const EdgeInsets.fromLTRB(15, 15, 15, 14),
+          key: Key('waste_statistics_card'),
+          padding: EdgeInsets.fromLTRB(15, 15, 15, 14),
           decoration: _cardDecoration(),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Row(
+              Row(
                 children: [
                   Expanded(
                     child: Column(
@@ -744,7 +920,7 @@ class _WasteAnalyticsSection extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 17),
+              SizedBox(height: 17),
               Row(
                 children: [
                   SizedBox(
@@ -754,8 +930,8 @@ class _WasteAnalyticsSection extends StatelessWidget {
                       alignment: Alignment.center,
                       children: [
                         CustomPaint(
-                          key: const Key('waste_category_chart'),
-                          size: const Size.square(118),
+                          key: Key('waste_category_chart'),
+                          size: Size.square(118),
                           painter: _DonutChartPainter(metrics.categories),
                         ),
                         Column(
@@ -763,15 +939,15 @@ class _WasteAnalyticsSection extends StatelessWidget {
                           children: [
                             Text(
                               '${metrics.total}',
-                              key: const Key('waste_total_items_chart'),
-                              style: const TextStyle(
+                              key: Key('waste_total_items_chart'),
+                              style: TextStyle(
                                 fontSize: 23,
                                 height: 1,
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            const Text(
+                            SizedBox(height: 4),
+                            Text(
                               'items',
                               style: TextStyle(
                                 color: AppColors.muted,
@@ -783,13 +959,13 @@ class _WasteAnalyticsSection extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const SizedBox(width: 17),
+                  SizedBox(width: 17),
                   Expanded(
                     child: Column(
                       children: [
                         for (final category in metrics.categories)
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 9),
+                            padding: EdgeInsets.only(bottom: 9),
                             child: Row(
                               children: [
                                 Container(
@@ -800,11 +976,11 @@ class _WasteAnalyticsSection extends StatelessWidget {
                                     borderRadius: BorderRadius.circular(3),
                                   ),
                                 ),
-                                const SizedBox(width: 8),
+                                SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
                                     category.label,
-                                    style: const TextStyle(fontSize: 11),
+                                    style: TextStyle(fontSize: 11),
                                   ),
                                 ),
                                 Text(
@@ -812,7 +988,7 @@ class _WasteAnalyticsSection extends StatelessWidget {
                                   key: Key(
                                     'category_${category.label.toLowerCase()}',
                                   ),
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w700,
                                   ),
@@ -825,14 +1001,14 @@ class _WasteAnalyticsSection extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 15),
+              SizedBox(height: 15),
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: SizedBox(
-                  key: const Key('waste_composition_chart'),
+                  key: Key('waste_composition_chart'),
                   height: 9,
                   child: metrics.total == 0
-                      ? const ColoredBox(color: Color(0xFFE7EAE4))
+                      ? ColoredBox(color: Color(0xFFE7EAE4))
                       : Row(
                           children: [
                             for (final category in metrics.categories)
@@ -848,9 +1024,9 @@ class _WasteAnalyticsSection extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: 12),
         _EnvironmentalImpactCard(metrics: metrics),
-        const SizedBox(height: 12),
+        SizedBox(height: 12),
         _WasteTrendCard(entries: entries),
       ],
     );
@@ -858,7 +1034,7 @@ class _WasteAnalyticsSection extends StatelessWidget {
 }
 
 class _DonutChartPainter extends CustomPainter {
-  const _DonutChartPainter(this.categories);
+  _DonutChartPainter(this.categories);
 
   final List<({String label, int count, Color color})> categories;
 
@@ -869,7 +1045,7 @@ class _DonutChartPainter extends CustomPainter {
     final rect = Rect.fromCircle(center: center, radius: radius);
     final total = categories.fold<int>(0, (sum, item) => sum + item.count);
     final track = Paint()
-      ..color = const Color(0xFFE7EAE4)
+      ..color = Color(0xFFE7EAE4)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 14;
     canvas.drawCircle(center, radius, track);
@@ -904,13 +1080,15 @@ class _EnvironmentalImpactCard extends StatelessWidget {
     final co2Saved = metrics.recyclable * .08;
     final diverted = metrics.recyclable * .035;
     return Container(
-      key: const Key('environmental_impact_card'),
-      padding: const EdgeInsets.fromLTRB(15, 15, 15, 14),
+      key: Key('environmental_impact_card'),
+      padding: EdgeInsets.fromLTRB(15, 15, 15, 14),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(13),
-        border: Border.all(color: const Color(0xFFCBE2D0), width: .8),
-        gradient: const LinearGradient(
-          colors: [Color(0xFFEAF5EB), Color(0xFFF7F7F0)],
+        border: Border.all(color: Color(0xFFCBE2D0), width: .8),
+        gradient: LinearGradient(
+          colors: AppColors.dark
+              ? [AppColors.card, AppColors.cardDeep]
+              : [Color(0xFFEAF5EB), Color(0xFFF7F7F0)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -918,7 +1096,7 @@ class _EnvironmentalImpactCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
               Icon(Icons.eco_outlined, color: AppColors.lime, size: 20),
               SizedBox(width: 8),
@@ -939,7 +1117,7 @@ class _EnvironmentalImpactCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: 16),
           Row(
             children: [
               _ImpactMetric(
@@ -997,7 +1175,7 @@ class _ImpactMetric extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 11),
+        padding: EdgeInsets.symmetric(horizontal: 7, vertical: 11),
         decoration: BoxDecoration(
           color: background,
           borderRadius: BorderRadius.circular(11),
@@ -1014,7 +1192,7 @@ class _ImpactMetric extends StatelessWidget {
               ),
               child: Icon(icon, color: color, size: 17),
             ),
-            const SizedBox(height: 7),
+            SizedBox(height: 7),
             FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(
@@ -1026,12 +1204,12 @@ class _ImpactMetric extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 4),
+            SizedBox(height: 4),
             FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(
                 label,
-                style: const TextStyle(color: AppColors.muted, fontSize: 9),
+                style: TextStyle(color: AppColors.muted, fontSize: 9),
               ),
             ),
           ],
@@ -1131,13 +1309,13 @@ class _WasteTrendCard extends StatelessWidget {
     );
 
     return Container(
-      key: const Key('date_wise_waste_chart_card'),
-      padding: const EdgeInsets.fromLTRB(15, 15, 15, 13),
+      key: Key('date_wise_waste_chart_card'),
+      padding: EdgeInsets.fromLTRB(15, 15, 15, 13),
       decoration: _cardDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
               Expanded(
                 child: Column(
@@ -1161,7 +1339,7 @@ class _WasteTrendCard extends StatelessWidget {
               Icon(Icons.show_chart_rounded, color: AppColors.green, size: 22),
             ],
           ),
-          const SizedBox(height: 14),
+          SizedBox(height: 14),
           Row(
             children: [
               _TrendLegend(
@@ -1169,7 +1347,7 @@ class _WasteTrendCard extends StatelessWidget {
                 label: 'Recyclable',
                 total: recyclableTotal,
               ),
-              const SizedBox(width: 16),
+              SizedBox(width: 16),
               _TrendLegend(
                 color: Color(0xFFFF5D62),
                 label: 'Non-recyclable',
@@ -1177,9 +1355,9 @@ class _WasteTrendCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: 12),
           if (points.isEmpty)
-            const SizedBox(
+            SizedBox(
               height: 190,
               child: Center(
                 child: Text(
@@ -1194,14 +1372,14 @@ class _WasteTrendCard extends StatelessWidget {
               label:
                   'Date-wise waste chart. Green represents recyclable waste and red represents non-recyclable waste.',
               child: SizedBox(
-                key: const Key('date_wise_waste_chart'),
+                key: Key('date_wise_waste_chart'),
                 height: 220,
                 width: double.infinity,
                 child: CustomPaint(painter: _WasteTrendPainter(points)),
               ),
             ),
-          const SizedBox(height: 3),
-          const Center(
+          SizedBox(height: 3),
+          Center(
             child: Text(
               'Detection date',
               style: TextStyle(
@@ -1232,7 +1410,7 @@ class _TrendLegend extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: color.withValues(alpha: .08),
           borderRadius: BorderRadius.circular(9),
@@ -1248,13 +1426,13 @@ class _TrendLegend extends StatelessWidget {
                 borderRadius: BorderRadius.circular(3),
               ),
             ),
-            const SizedBox(width: 7),
+            SizedBox(width: 7),
             Expanded(
               child: Text(
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 10),
+                style: TextStyle(fontSize: 10),
               ),
             ),
             Text(
@@ -1273,7 +1451,7 @@ class _TrendLegend extends StatelessWidget {
 }
 
 class _WasteTrendPainter extends CustomPainter {
-  const _WasteTrendPainter(this.points);
+  _WasteTrendPainter(this.points);
 
   final List<_DailyWasteCount> points;
 
@@ -1296,7 +1474,7 @@ class _WasteTrendPainter extends CustomPainter {
     );
     final yMax = math.max(4, (highest / 4).ceil() * 4);
     final gridPaint = Paint()
-      ..color = const Color(0xFFE0E3DD)
+      ..color = Color(0xFFE0E3DD)
       ..strokeWidth = 1;
 
     for (var index = 0; index <= 4; index++) {
@@ -1306,13 +1484,13 @@ class _WasteTrendPainter extends CustomPainter {
         canvas,
         '${(yMax * index / 4).round()}',
         Offset(0, y - 6),
-        const Size(27, 14),
+        Size(27, 14),
         TextAlign.right,
       );
     }
 
     final axisPaint = Paint()
-      ..color = const Color(0xFFAAB5AE)
+      ..color = Color(0xFFAAB5AE)
       ..strokeWidth = 1.2;
     canvas.drawLine(plot.bottomLeft, plot.topLeft, axisPaint);
     canvas.drawLine(plot.bottomLeft, plot.bottomRight, axisPaint);
@@ -1338,7 +1516,7 @@ class _WasteTrendPainter extends CustomPainter {
         points.length,
         (index) => Offset(xFor(index), yFor(points[index].nonRecyclable)),
       ),
-      const Color(0xFFFF5D62),
+      Color(0xFFFF5D62),
     );
 
     for (var index = 0; index < points.length; index++) {
@@ -1360,7 +1538,7 @@ class _WasteTrendPainter extends CustomPainter {
       canvas,
       'Items',
       Offset.zero,
-      const Size(30, 12),
+      Size(30, 12),
       TextAlign.center,
       fontSize: 8,
     );
@@ -1465,7 +1643,7 @@ class _WasteInventoryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final wasteEntries = entries;
     if (wasteEntries == null && loadError == null) {
-      return const _WasteInventoryShell(
+      return _WasteInventoryShell(
         total: '—',
         children: [
           SizedBox(
@@ -1479,24 +1657,24 @@ class _WasteInventoryCard extends StatelessWidget {
       return _WasteInventoryShell(
         total: '0',
         children: [
-          const SizedBox(height: 16),
+          SizedBox(height: 16),
           Text(
-            'Unable to load verified waste',
-            style: const TextStyle(color: AppColors.muted),
+            'Unable to load waste detections',
+            style: TextStyle(color: AppColors.muted),
           ),
-          const SizedBox(height: 4),
-          TextButton(onPressed: onRetry, child: const Text('Retry')),
-          const SizedBox(height: 8),
+          SizedBox(height: 4),
+          TextButton(onPressed: onRetry, child: Text('Retry')),
+          SizedBox(height: 8),
         ],
       );
     }
     if (wasteEntries!.isEmpty) {
-      return const _WasteInventoryShell(
+      return _WasteInventoryShell(
         total: '0',
         children: [
           SizedBox(
             height: 96,
-            child: Center(child: Text('No verified waste detected yet')),
+            child: Center(child: Text('No waste detected yet')),
           ),
         ],
       );
@@ -1510,7 +1688,7 @@ class _WasteInventoryCard extends StatelessWidget {
         for (var index = 0; index < wasteEntries.length; index++) ...[
           _WasteRow(entry: wasteEntries[index]),
           if (index != wasteEntries.length - 1)
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(left: 64, right: 14),
               child: Divider(height: 1, thickness: 1, color: AppColors.divider),
             ),
@@ -1534,30 +1712,30 @@ class _WasteInventoryShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      key: const Key('waste_inventory_card'),
+      key: Key('waste_inventory_card'),
       decoration: _cardDecoration(),
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 5, 8, 4),
+            padding: EdgeInsets.fromLTRB(14, 5, 8, 4),
             child: Row(
               children: [
-                const Expanded(
+                Expanded(
                   child: Text(
                     'Waste Inside Dustbin',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                 ),
                 IconButton(
-                  key: const Key('clear_all_waste_button'),
+                  key: Key('clear_all_waste_button'),
                   tooltip: 'Clear all waste',
                   onPressed: onClear,
                   visualDensity: VisualDensity.compact,
                   iconSize: 19,
-                  icon: const Icon(Icons.delete_sweep_outlined),
+                  icon: Icon(Icons.delete_sweep_outlined),
                 ),
-                const _StatusDot(),
-                const SizedBox(width: 5),
+                _StatusDot(),
+                SizedBox(width: 5),
                 Text(
                   'Live',
                   style: TextStyle(fontSize: 11, color: AppColors.muted),
@@ -1565,23 +1743,20 @@ class _WasteInventoryShell extends StatelessWidget {
               ],
             ),
           ),
-          const Divider(height: 1, thickness: 1, color: AppColors.divider),
+          Divider(height: 1, thickness: 1, color: AppColors.divider),
           ...children,
-          const Divider(height: 1, thickness: 1, color: AppColors.divider),
+          Divider(height: 1, thickness: 1, color: AppColors.divider),
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 16, 13),
+            padding: EdgeInsets.fromLTRB(14, 12, 16, 13),
             child: Row(
               children: [
-                const Expanded(
+                Expanded(
                   child: Text('Total Items', style: TextStyle(fontSize: 12)),
                 ),
                 Text(
                   total,
-                  key: const Key('waste_inventory_total'),
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  key: Key('waste_inventory_total'),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                 ),
               ],
             ),
@@ -1601,29 +1776,27 @@ class _WasteRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       key: Key('waste_row_${entry.count}'),
-      onTap: entry.imageUrl == null
-          ? null
-          : () => _showWasteDetails(context, entry),
+      onTap: () => _showWasteDetails(context, entry),
       child: SizedBox(
         height: 58,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
+          padding: EdgeInsets.symmetric(horizontal: 14),
           child: Row(
             children: [
               Container(
                 width: 45,
                 height: 42,
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF0F1EB),
+                  color: AppColors.cardDeep,
                   borderRadius: BorderRadius.circular(7),
-                  border: Border.all(color: const Color(0xFFDDE1DA), width: .7),
+                  border: Border.all(color: Color(0xFFDDE1DA), width: .7),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: entry.imageUrl != null
                     ? Image.network(
                         entry.imageUrl!,
                         fit: BoxFit.cover,
-                        errorBuilder: (context, error, stack) => const Icon(
+                        errorBuilder: (context, error, stack) => Icon(
                           Icons.image_not_supported_outlined,
                           color: AppColors.muted,
                         ),
@@ -1634,12 +1807,12 @@ class _WasteRow extends StatelessWidget {
                         fit: BoxFit.cover,
                         filterQuality: FilterQuality.medium,
                       )
-                    : const Icon(
+                    : Icon(
                         Icons.delete_outline_rounded,
                         color: AppColors.muted,
                       ),
               ),
-              const SizedBox(width: 13),
+              SizedBox(width: 13),
               Expanded(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -1649,13 +1822,13 @@ class _WasteRow extends StatelessWidget {
                       entry.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 13,
                         height: 1.15,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    const SizedBox(height: 5),
+                    SizedBox(height: 5),
                     Text(
                       entry.classification,
                       maxLines: 1,
@@ -1670,16 +1843,13 @@ class _WasteRow extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 12),
+              SizedBox(width: 12),
               SizedBox(
                 width: 24,
                 child: Text(
                   entry.count.toString(),
                   textAlign: TextAlign.right,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                 ),
               ),
             ],
@@ -1691,134 +1861,9 @@ class _WasteRow extends StatelessWidget {
 }
 
 void _showWasteDetails(BuildContext context, WasteEntry entry) {
-  showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: AppColors.cardDeep,
-    barrierColor: Colors.black.withValues(alpha: .45),
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
-    ),
-    clipBehavior: Clip.antiAlias,
-    builder: (context) => SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 38,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.muted,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: AspectRatio(
-                aspectRatio: 4 / 3,
-                child: Image.network(
-                  entry.imageUrl!,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stack) => const Center(
-                    child: Icon(Icons.image_not_supported_outlined, size: 42),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
-            Text(
-              entry.name,
-              style: const TextStyle(
-                fontSize: 22,
-                height: 1.15,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: entry.tags
-                  .map(
-                    (tag) => Chip(
-                      label: Text(tag),
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: AppColors.card,
-                    ),
-                  )
-                  .toList(),
-            ),
-            const SizedBox(height: 14),
-            _DetailLine(label: 'Material', value: entry.material),
-            _DetailLine(
-              label: 'Waste confidence',
-              value: '${entry.confidence}%',
-            ),
-            _DetailLine(
-              label: 'Recycling',
-              value: entry.recyclable ? 'Recyclable' : 'Not recyclable',
-            ),
-            if (entry.recyclingGuidance.isNotEmpty)
-              _DetailLine(
-                label: 'Recycling guidance',
-                value: entry.recyclingGuidance,
-              ),
-            if (entry.contaminationNotes.isNotEmpty)
-              _DetailLine(
-                label: 'Contamination',
-                value: entry.contaminationNotes,
-              ),
-            if (entry.reuseSafe && entry.reuseIdeas.isNotEmpty)
-              _DetailLine(
-                label: 'Best from waste',
-                value: entry.reuseIdeas.join(' • '),
-              ),
-            if (entry.safetyWarnings.isNotEmpty)
-              _DetailLine(
-                label: 'Safety',
-                value: entry.safetyWarnings.join(' • '),
-              ),
-            if (entry.evidenceSummary.isNotEmpty)
-              _DetailLine(label: 'AI evidence', value: entry.evidenceSummary),
-          ],
-        ),
-      ),
-    ),
+  Navigator.of(context).push(
+    MaterialPageRoute<void>(builder: (_) => DetectionDetailsPage(entry: entry)),
   );
-}
-
-class _DetailLine extends StatelessWidget {
-  const _DetailLine({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.muted,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(value, style: const TextStyle(fontSize: 13, height: 1.25)),
-        ],
-      ),
-    );
-  }
 }
 
 class _HistoryView extends StatelessWidget {
@@ -1827,11 +1872,13 @@ class _HistoryView extends StatelessWidget {
     required this.entries,
     required this.loadError,
     required this.onRetry,
+    required this.onMenu,
   });
 
   final List<WasteEntry>? entries;
   final Object? loadError;
   final Future<void> Function() onRetry;
+  final VoidCallback onMenu;
 
   @override
   Widget build(BuildContext context) {
@@ -1843,18 +1890,25 @@ class _HistoryView extends StatelessWidget {
       bottom: false,
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 430),
+          constraints: BoxConstraints(maxWidth: 430),
           child: CustomScrollView(
-            key: const Key('history_scroll_view'),
-            physics: const ClampingScrollPhysics(),
+            key: Key('history_scroll_view'),
+            physics: ClampingScrollPhysics(),
             slivers: [
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+                padding: EdgeInsets.fromLTRB(12, 12, 12, 24),
                 sliver: SliverList.list(
                   children: [
                     Row(
                       children: [
-                        const Expanded(
+                        _HeaderButton(
+                          key: Key('history_menu_button'),
+                          icon: Icons.menu_rounded,
+                          label: 'Open navigation',
+                          onTap: onMenu,
+                        ),
+                        SizedBox(width: 8),
+                        Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -1868,7 +1922,7 @@ class _HistoryView extends StatelessWidget {
                               ),
                               SizedBox(height: 5),
                               Text(
-                                'Your latest verified detections',
+                                'Your latest detections and review items',
                                 style: TextStyle(
                                   color: AppColors.muted,
                                   fontSize: 12,
@@ -1878,60 +1932,62 @@ class _HistoryView extends StatelessWidget {
                           ),
                         ),
                         IconButton.filledTonal(
-                          key: const Key('history_refresh_button'),
+                          key: Key('history_refresh_button'),
                           tooltip: 'Refresh history',
                           onPressed: onRetry,
                           style: IconButton.styleFrom(
                             backgroundColor: AppColors.card,
                             foregroundColor: AppColors.green,
                           ),
-                          icon: const Icon(Icons.refresh_rounded),
+                          icon: Icon(Icons.refresh_rounded),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 22),
+                    SizedBox(height: 22),
                     Container(
-                      key: const Key('history_summary_card'),
-                      padding: const EdgeInsets.all(16),
+                      key: Key('history_summary_card'),
+                      padding: EdgeInsets.all(16),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(16),
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFFE5F3E8), Color(0xFFF7F7F0)],
+                        gradient: LinearGradient(
+                          colors: AppColors.dark
+                              ? [AppColors.card, AppColors.cardDeep]
+                              : [Color(0xFFE5F3E8), Color(0xFFF7F7F0)],
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
                         ),
-                        border: Border.all(color: const Color(0xFFC5DFC9)),
+                        border: Border.all(color: Color(0xFFC5DFC9)),
                       ),
                       child: Row(
                         children: [
                           Container(
                             width: 45,
                             height: 45,
-                            decoration: const BoxDecoration(
+                            decoration: BoxDecoration(
                               color: Color(0x2231C34B),
                               shape: BoxShape.circle,
                             ),
-                            child: const Icon(
+                            child: Icon(
                               Icons.history_rounded,
                               color: AppColors.lime,
                             ),
                           ),
-                          const SizedBox(width: 13),
+                          SizedBox(width: 13),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
                                   '${wasteEntries?.length ?? 0} records',
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 17,
                                     fontWeight: FontWeight.w800,
                                   ),
                                 ),
-                                const SizedBox(height: 3),
+                                SizedBox(height: 3),
                                 Text(
                                   '$total total items detected',
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     color: AppColors.muted,
                                     fontSize: 11,
                                   ),
@@ -1939,10 +1995,14 @@ class _HistoryView extends StatelessWidget {
                               ],
                             ),
                           ),
-                          const _StatusDot(),
-                          const SizedBox(width: 6),
-                          const Text(
-                            'Live',
+                          _StatusDot(),
+                          SizedBox(width: 6),
+                          Text(
+                            loadError != null
+                                ? 'Offline'
+                                : wasteEntries == null
+                                ? 'Syncing'
+                                : 'Live',
                             style: TextStyle(
                               color: AppColors.muted,
                               fontSize: 10,
@@ -1951,9 +2011,9 @@ class _HistoryView extends StatelessWidget {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    SizedBox(height: 16),
                     if (wasteEntries == null && loadError == null)
-                      const SizedBox(
+                      SizedBox(
                         height: 180,
                         child: Center(
                           child: CircularProgressIndicator(strokeWidth: 2),
@@ -1966,14 +2026,14 @@ class _HistoryView extends StatelessWidget {
                         message: 'Check your connection and try again.',
                         action: TextButton(
                           onPressed: onRetry,
-                          child: const Text('Retry'),
+                          child: Text('Retry'),
                         ),
                       )
                     else if (wasteEntries!.isEmpty)
-                      const _HistoryMessage(
+                      _HistoryMessage(
                         icon: Icons.history_toggle_off_rounded,
                         title: 'No history yet',
-                        message: 'Verified detections will appear here.',
+                        message: 'Camera detections will appear here.',
                       )
                     else
                       for (
@@ -1986,7 +2046,7 @@ class _HistoryView extends StatelessWidget {
                           index: index,
                         ),
                         if (index != wasteEntries.length - 1)
-                          const SizedBox(height: 10),
+                          SizedBox(height: 10),
                       ],
                   ],
                 ),
@@ -2012,15 +2072,13 @@ class _HistoryEntryCard extends StatelessWidget {
       color: AppColors.card,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: const BorderSide(color: AppColors.cardBorder, width: .8),
+        side: BorderSide(color: AppColors.cardBorder, width: .8),
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: entry.imageUrl == null
-            ? null
-            : () => _showWasteDetails(context, entry),
+        onTap: () => _showWasteDetails(context, entry),
         child: Padding(
-          padding: const EdgeInsets.all(12),
+          padding: EdgeInsets.all(12),
           child: Row(
             children: [
               Container(
@@ -2028,26 +2086,26 @@ class _HistoryEntryCard extends StatelessWidget {
                 height: 54,
                 clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF0F1EB),
+                  color: AppColors.cardDeep,
                   borderRadius: BorderRadius.circular(11),
                 ),
                 child: entry.imageUrl != null
                     ? Image.network(
                         entry.imageUrl!,
                         fit: BoxFit.cover,
-                        errorBuilder: (context, error, stack) => const Icon(
+                        errorBuilder: (context, error, stack) => Icon(
                           Icons.image_not_supported_outlined,
                           color: AppColors.muted,
                         ),
                       )
                     : entry.asset != null
                     ? Image.asset(entry.asset!, fit: BoxFit.cover)
-                    : const Icon(
+                    : Icon(
                         Icons.delete_outline_rounded,
                         color: AppColors.muted,
                       ),
               ),
-              const SizedBox(width: 13),
+              SizedBox(width: 13),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -2056,12 +2114,12 @@ class _HistoryEntryCard extends StatelessWidget {
                       entry.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    SizedBox(height: 6),
                     Text(
                       entry.classification,
                       maxLines: 1,
@@ -2072,22 +2130,36 @@ class _HistoryEntryCard extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
+                    SizedBox(height: 9),
+                    Text(
+                      entry.locationLabel.isEmpty
+                          ? 'Location not recorded'
+                          : entry.locationLabel,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      detectedTime(entry.capturedAt),
+                      style: TextStyle(fontSize: 10, color: AppColors.muted),
+                    ),
                   ],
                 ),
               ),
-              const SizedBox(width: 12),
+              SizedBox(width: 12),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    '×${entry.count}',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                    ),
+                    '${entry.confidence}%',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
                   ),
-                  const SizedBox(height: 7),
-                  const Icon(
+                  SizedBox(height: 7),
+                  Icon(
                     Icons.chevron_right_rounded,
                     color: AppColors.muted,
                     size: 18,
@@ -2118,29 +2190,330 @@ class _HistoryMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 34),
+      padding: EdgeInsets.symmetric(horizontal: 20, vertical: 34),
       decoration: _cardDecoration(),
       child: Center(
         child: Column(
           children: [
             Icon(icon, color: AppColors.muted, size: 34),
-            const SizedBox(height: 12),
+            SizedBox(height: 12),
             Text(
               title,
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
-            const SizedBox(height: 5),
+            SizedBox(height: 5),
             Text(
               message,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: AppColors.muted, fontSize: 12),
+              style: TextStyle(color: AppColors.muted, fontSize: 12),
             ),
-            if (action != null) ...[const SizedBox(height: 8), action!],
+            if (action != null) ...[SizedBox(height: 8), action!],
           ],
         ),
       ),
     );
   }
+}
+
+enum _ReportPeriod {
+  today('Today', 1),
+  lastSevenDays('Last 7 days', 7),
+  lastThirtyDays('Last 30 days', 30),
+  all('All records', 0);
+
+  const _ReportPeriod(this.label, this.days);
+  final String label;
+  final int days;
+}
+
+class _ShareReportSheet extends StatefulWidget {
+  const _ShareReportSheet();
+
+  @override
+  State<_ShareReportSheet> createState() => _ShareReportSheetState();
+}
+
+class _ShareReportSheetState extends State<_ShareReportSheet> {
+  _ReportPeriod _selected = _ReportPeriod.lastSevenDays;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: EdgeInsets.fromLTRB(22, 12, 22, 28),
+    decoration: BoxDecoration(
+      color: AppColors.card,
+      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+    ),
+    child: SafeArea(
+      top: false,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 42,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.cardBorder,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          ),
+          SizedBox(height: 22),
+          Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: Color(0x1A2C9851),
+                child: Icon(Icons.table_view_rounded, color: AppColors.green),
+              ),
+              SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Share waste report',
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(height: 3),
+                    Text(
+                      'Excel file (.xlsx) with summary and detections',
+                      style: TextStyle(color: AppColors.muted, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 24),
+          Text(
+            'Period',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+          SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 9,
+            children: [
+              for (final period in _ReportPeriod.values)
+                ChoiceChip(
+                  label: Text(period.label),
+                  selected: _selected == period,
+                  onSelected: (_) => setState(() => _selected = period),
+                  selectedColor: AppColors.green.withValues(alpha: .14),
+                  labelStyle: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: _selected == period
+                        ? AppColors.lime
+                        : AppColors.textPrimary,
+                  ),
+                ),
+            ],
+          ),
+          SizedBox(height: 26),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, _selected),
+            icon: Icon(Icons.ios_share_rounded),
+            label: Text(
+              'Create and share',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+            ),
+            style: FilledButton.styleFrom(
+              minimumSize: Size.fromHeight(54),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(27),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _DashboardDrawer extends StatelessWidget {
+  const _DashboardDrawer({
+    required this.selectedIndex,
+    required this.onSelected,
+    required this.onLogout,
+  });
+  final VoidCallback onLogout;
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) => Drawer(
+    backgroundColor: Color(0xFF0E4F34),
+    child: SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 20, 16, 16),
+        child: ListView(
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: AppColors.green,
+                  child: Icon(
+                    Icons.delete_outline_rounded,
+                    color: Colors.white,
+                  ),
+                ),
+                SizedBox(width: 11),
+                Text(
+                  'EcoSort AI',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 36),
+            _DrawerDestination(
+              icon: Icons.grid_view_rounded,
+              label: 'Dashboard',
+              selected: selectedIndex == 0,
+              onTap: () => onSelected(0),
+            ),
+            _DrawerDestination(
+              icon: Icons.insights_outlined,
+              label: 'Analytics',
+              selected: selectedIndex == 1,
+              onTap: () => onSelected(1),
+            ),
+            _DrawerDestination(
+              icon: Icons.history_rounded,
+              label: 'Detections',
+              selected: selectedIndex == 2,
+              onTap: () => onSelected(2),
+            ),
+            _DrawerDestination(
+              icon: Icons.location_on_outlined,
+              label: 'Location',
+              selected: selectedIndex == 3,
+              onTap: () => onSelected(3),
+            ),
+            _DrawerDestination(
+              icon: Icons.rate_review_outlined,
+              label: 'Sentiment analysis',
+              selected: selectedIndex == 4,
+              onTap: () => onSelected(4),
+            ),
+            _DrawerDestination(
+              icon: Icons.settings_outlined,
+              label: 'Settings',
+              selected: selectedIndex == 5,
+              onTap: () => onSelected(5),
+            ),
+            _DrawerDestination(
+              icon: Icons.logout,
+              label: 'Logout',
+              onTap: onLogout,
+            ),
+            SizedBox(height: 24),
+            Container(
+              padding: EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: .12),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 17,
+                    backgroundColor: AppColors.green,
+                    child: Text(
+                      'AD',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'EcoSort user',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          'Single-camera workspace',
+                          style: TextStyle(
+                            color: Color(0xFFC0D8CA),
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _DrawerDestination extends StatelessWidget {
+  const _DrawerDestination({
+    required this.icon,
+    required this.label,
+    this.selected = false,
+    this.onTap,
+  });
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback? onTap;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: EdgeInsets.only(bottom: 8),
+    child: Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          decoration: BoxDecoration(
+            color: selected
+                ? Colors.white.withValues(alpha: .14)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: Colors.white, size: 21),
+              SizedBox(width: 13),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _DashboardNavigation extends StatelessWidget {
@@ -2161,8 +2534,8 @@ class _DashboardNavigation extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      key: const Key('bottom_navigation'),
-      decoration: const BoxDecoration(
+      key: Key('bottom_navigation'),
+      decoration: BoxDecoration(
         color: AppColors.cardDeep,
         border: Border(top: BorderSide(color: AppColors.cardBorder, width: 1)),
       ),
@@ -2212,12 +2585,12 @@ class _NavigationItem extends StatelessWidget {
           key: Key('navigation_${item.label.toLowerCase()}'),
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.only(top: 9, bottom: 7),
+            padding: EdgeInsets.only(top: 9, bottom: 7),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(item.icon, size: 23, color: color),
-                const SizedBox(height: 4),
+                SizedBox(height: 4),
                 FittedBox(
                   fit: BoxFit.scaleDown,
                   child: Text(
@@ -2247,7 +2620,7 @@ BoxDecoration _cardDecoration() {
       color: AppColors.cardBorder.withValues(alpha: .7),
       width: .7,
     ),
-    boxShadow: const [
+    boxShadow: [
       BoxShadow(color: Color(0x160F2D1C), blurRadius: 18, offset: Offset(0, 6)),
     ],
   );

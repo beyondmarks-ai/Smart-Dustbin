@@ -22,7 +22,14 @@ class WasteEntry {
     this.tags = const [],
     this.capturedAt,
     this.evidenceSummary = '',
+    this.latitude,
+    this.longitude,
+    this.locationLabel = '',
+    this.locationAddress = '',
+    this.deviceId = '',
     this.itemIndex = 0,
+    this.verificationStatus = 'unknown',
+    this.locationAccuracy,
   });
 
   final String name;
@@ -44,5 +51,13 @@ class WasteEntry {
   final List<String> tags;
   final String? capturedAt;
   final String evidenceSummary;
+  final double? latitude;
+  final double? longitude;
+  final String locationLabel;
+  final String locationAddress;
+  final String deviceId;
   final int itemIndex;
+  final String verificationStatus;
+  final double? locationAccuracy;
+  bool get needsReview => verificationStatus == 'review';
 }

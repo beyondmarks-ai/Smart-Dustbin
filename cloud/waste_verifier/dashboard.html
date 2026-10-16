@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Verified Waste</title>
+  <style>
+    :root{color-scheme:light;--ink:#173229;--muted:#65756e;--bg:#eef4ef;--card:#fff;--green:#18794e;--line:#d7e3da;--amber:#9a6700}
+    *{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+    header{padding:32px clamp(20px,5vw,72px);background:linear-gradient(125deg,#123c2d,#1f6b4b);color:white}
+    header p{max-width:700px;margin:8px 0 0;color:#d7eee3}.stats{font-weight:700;margin-top:16px}
+    main{padding:28px clamp(16px,5vw,72px) 60px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:20px}
+    article{background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 7px 24px #183b2b12}
+    article>img{width:100%;aspect-ratio:4/3;object-fit:cover;background:#dce7df}.body{padding:18px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .pill{padding:5px 9px;border-radius:999px;background:#e1f2e8;color:var(--green);font-size:12px;font-weight:750}.pill.warn{background:#fff1c7;color:var(--amber)}
+    h2{font-size:19px;margin:12px 0 6px}.summary{color:var(--muted);line-height:1.45;margin:0 0 14px}.item{border-top:1px solid var(--line);padding-top:12px;margin-top:12px}
+    h3{font-size:15px;margin:0 0 5px}.label{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700;margin:12px 0 5px}
+    ul{padding-left:19px;margin:6px 0;color:#394d45;line-height:1.45}.empty{padding:48px;text-align:center;color:var(--muted);background:white;border-radius:18px}
+    button{border:0;border-radius:10px;background:white;color:#174c38;padding:9px 13px;font-weight:700;cursor:pointer;margin-top:14px}
+  </style>
+</head>
+<body>
+  <header><h1>Verified Waste</h1><p>Only camera events confirmed by multi-frame AI verification appear here. Recycling guidance depends on local facilities.</p><div class="stats" id="stats">Loadingâ€¦</div><button id="refresh">Refresh</button></header>
+  <main><div class="grid" id="grid"></div></main>
+  <script>
+    const grid=document.querySelector('#grid'),stats=document.querySelector('#stats');
+    const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n};
+    function renderItem(item){
+      const card=node('article'),img=node('img');img.src=item.image_url;img.alt=item.summary||'Verified waste';card.append(img);
+      const body=node('div','body'),row=node('div','row');row.append(node('span','pill',Math.round(item.waste_confidence*100)+'% waste confidence'));
+      body.append(row,node('h2','',item.summary||'Verified waste'),node('p','summary',item.evidence_summary||''));
+      (item.items||[]).forEach(value=>{const section=node('section','item');section.append(node('h3','',value.name+' Â· '+value.category));
+        section.append(node('span','pill '+(value.recyclable?'':'warn'),value.recyclable?'Recyclable':'Not confirmed recyclable'));
+        section.append(node('div','label','Recycling'));section.append(node('p','summary',value.recycling_guidance));
+        if(value.best_from_waste_ideas?.length){section.append(node('div','label','Best from waste'));const list=node('ul');value.best_from_waste_ideas.forEach(x=>list.append(node('li','',x)));section.append(list)}
+        if(value.safety_warnings?.length){section.append(node('div','label','Safety'));const list=node('ul');value.safety_warnings.forEach(x=>list.append(node('li','',x)));section.append(list)}body.append(section)});
+      card.append(body);return card;
+    }
+    async function load(){stats.textContent='Loadingâ€¦';grid.replaceChildren();try{const res=await fetch('/api/waste');if(!res.ok)throw new Error('API '+res.status);const data=await res.json();stats.textContent=data.count+' verified event'+(data.count===1?'':'s');
+      if(!data.items.length){grid.append(node('div','empty','No verified waste has been detected yet.'));return}data.items.forEach(x=>grid.append(renderItem(x)))}catch(error){stats.textContent='Unable to load';grid.append(node('div','empty',error.message))}}
+    document.querySelector('#refresh').addEventListener('click',load);load();
+  </script>
+</body>
+</html>

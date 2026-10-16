@@ -19,6 +19,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.47.5'
           channel: stable
           cache: true
 
@@ -26,10 +27,38 @@ jobs:
         run: flutter pub get
 
       - name: Check formatting
-        run: dart format --output=none --set-exit-if-changed lib test
+        run: dart format --output=none --set-exit-if-changed lib test tool
 
       - name: Analyze
         run: flutter analyze
 
-      - name: Run widget tests
-        run: flutter test test/widget_test.dart
+      - name: Run all offline app tests
+        run: flutter test
+
+  azure-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test Azure classifier gate and storage adapter
+        working-directory: cloud/waste_verifier
+        run: python -m unittest discover -s tests -v
+
+  firmware-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core
+        run: |
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.11 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+      - name: Build active firmware with placeholder credentials
+        run: |
+          cp arduino/EcoSortAzure/wifi_config.example.h arduino/EcoSortAzure/wifi_config.h
+          cp arduino/EcoSortAzure/azure_config.example.h arduino/EcoSortAzure/azure_config.h
+          arduino-cli compile --fqbn esp32:esp32:esp32cam arduino/EcoSortAzure

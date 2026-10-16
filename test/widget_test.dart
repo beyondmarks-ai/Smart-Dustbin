@@ -45,7 +45,7 @@ void main() {
 
     expect(find.text('Hello, User 👋'), findsOneWidget);
     expect(find.text('Hello, Rakesh 👋'), findsNothing);
-    expect(find.byKey(const Key('menu_button')), findsNothing);
+    expect(find.byKey(const Key('menu_button')), findsOneWidget);
     expect(find.text('66%'), findsOneWidget);
     expect(find.text('Normal'), findsOneWidget);
     expect(
@@ -118,7 +118,7 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Clear all'));
     await tester.pumpAndSettle();
 
-    expect(find.text('No verified waste detected yet'), findsOneWidget);
+    expect(find.text('No waste detected yet'), findsOneWidget);
     final scrollView = tester.widget<CustomScrollView>(
       find.byKey(const Key('dashboard_scroll_view')),
     );
@@ -191,7 +191,6 @@ void main() {
   ) async {
     await pumpDashboard(tester);
 
-    await tester.tap(find.byKey(const Key('notification_button')));
     await tester.tap(find.byKey(const Key('navigation_insights')));
     await tester.pumpAndSettle();
 
