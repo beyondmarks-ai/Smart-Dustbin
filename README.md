@@ -60,3 +60,10 @@ To calibrate, stand beside the bin and open **Location > Use phone location**. E
 To change the hotspot used by the camera, open **Settings > Change camera Wi-Fi**. Test and save the new credentials, then check the connection. A failed trial keeps the previous network; the protected EcoSort-Setup recovery hotspot also supports setup when the old network is unavailable. See the [Wi-Fi recovery guide](arduino/EcoSortAzure/README.md#change-camera-wi-fi-from-the-app).
 
 To read the camera IP and setup code without Arduino Serial Monitor, double-click **Get-CameraSetup.cmd**, or run `powershell -NoProfile -File tool/Get-CameraSetup.ps1`. Current firmware answers directly over USB; older firmware requires a reset while the script listens. Keep the setup code private.
+
+<!-- beyond-marks-credit:start -->
+---
+### Built by Beyond Marks AI Academy
+
+Developed by **Rakesh Kumar** at [Beyond Marks AI Academy](https://beyondmarks.ai).
+<!-- beyond-marks-credit:end -->
