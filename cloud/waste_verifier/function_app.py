@@ -34,6 +34,7 @@ def process_event(
     event_id: str,
     detection_location: dict | None = None,
     device_id: str = "",
+    frame_count: int = 5,
 ) -> dict:
     service = blob_service()
     analysis_blob = service.get_blob_client(ANALYSIS_CONTAINER, f"{event_id}.json")
@@ -43,7 +44,9 @@ def process_event(
     raw = service.get_container_client(RAW_CONTAINER)
     frames: list[bytes] = []
     frame_properties = []
-    for frame_number in range(1, 6):
+    if frame_count not in (3, 5):
+        raise ValueError("frame_count must be 3 or 5")
+    for frame_number in range(1, frame_count + 1):
         client = raw.get_blob_client(f"motion/{event_id}/frame_{frame_number}.jpg")
         frames.append(client.download_blob().readall())
         frame_properties.append(client.get_blob_properties())
@@ -102,7 +105,18 @@ def process_camera_event(req: func.HttpRequest) -> func.HttpResponse:
     if location is not None and not isinstance(location, dict):
         return func.HttpResponse("Invalid detection_location", status_code=400)
     try:
-        result = process_event(event_id, location, str(payload.get("device_id", "")).strip())
+        frame_count = int(payload.get("frame_count", 5))
+    except (TypeError, ValueError):
+        return func.HttpResponse("Invalid frame_count", status_code=400)
+    if frame_count not in (3, 5):
+        return func.HttpResponse("Invalid frame_count", status_code=400)
+    try:
+        result = process_event(
+            event_id,
+            location,
+            str(payload.get("device_id", "")).strip(),
+            frame_count,
+        )
     except Exception:
         logging.exception("Camera event %s could not be processed", event_id)
         return func.HttpResponse("Processing failed", status_code=500)

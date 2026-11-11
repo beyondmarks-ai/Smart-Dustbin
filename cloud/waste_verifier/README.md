@@ -1,6 +1,6 @@
 # Azure waste verifier
 
-Active Python 3.11 Azure Functions backend for the ESP32-CAM and Flutter app. The camera uploads five JPEGs to private Blob Storage, then submits an authenticated `POST /api/process`. Azure OpenAI classifies the images. Flutter reads `GET /api/waste` and `GET /api/waste/{event_id}/image`; `/api/health` reports service status.
+Active Python 3.11 Azure Functions backend for the ESP32-CAM and Flutter app. Current firmware uploads three quality-checked JPEGs to private Blob Storage, then submits an authenticated `POST /api/process` with `frame_count: 3`; legacy five-frame events remain supported. Azure OpenAI classifies the images. Flutter reads `GET /api/waste` and `GET /api/waste/{event_id}/image`; `/api/health` reports service status.
 
 ## Configuration
 

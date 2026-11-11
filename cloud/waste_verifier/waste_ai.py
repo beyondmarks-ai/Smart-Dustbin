@@ -8,10 +8,10 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-CLASSIFIER_REVISION = "2026-10-16-film-aware-v1"
+CLASSIFIER_REVISION = "2026-11-10-fast3-reuse5-v2"
 
 SYSTEM_PROMPT = """You classify items presented to a dedicated smart-bin sorting camera.
-Analyze all five chronological frames as one event. The foreground inspection area is where users
+Analyze all provided chronological frames as one event. The foreground inspection area is where users
 present items for recycling or disposal. Identify the visible item and its material for sorting.
 This is a bin inspection station, not a general street-litter or abandonment detector.
 
@@ -40,7 +40,9 @@ Critical rules:
 - Recyclability is general guidance; explicitly note contamination and local-facility dependence.
 - Reuse ideas must be practical and safe. Do not suggest reuse for hazardous, medical, chemical,
   sharp, contaminated, or unknown waste.
-- frames_with_waste must contain only frame numbers 1 through 5 where the sortable item is clearly
+- For safe reusable items, return up to five distinct best_from_waste_ideas. Each must say what to
+  make and give short numbered steps in one concise string so a beginner can complete it.
+- frames_with_waste must contain only provided frame numbers where the sortable item is clearly
   visible. Confidence must reflect visual evidence; do not raise it just to satisfy a threshold.
 - Keep evidence_summary brief and based on visible facts, not hidden reasoning.
 """
@@ -91,7 +93,7 @@ RESPONSE_SCHEMA: dict[str, Any] = {
                     "contamination_notes": {"type": "string"},
                     "reuse_safe": {"type": "boolean"},
                     "best_from_waste_ideas": {
-                        "type": "array", "items": {"type": "string"}, "maxItems": 3
+                        "type": "array", "items": {"type": "string"}, "maxItems": 5
                     },
                     "safety_warnings": {
                         "type": "array", "items": {"type": "string"}, "maxItems": 4
@@ -108,8 +110,8 @@ def _image_data_url(image: bytes) -> str:
 
 
 def analyze_frames(frames: list[bytes], credential: Any) -> dict[str, Any]:
-    if len(frames) != 5:
-        raise ValueError("Exactly five frames are required for verification")
+    if len(frames) not in (3, 5):
+        raise ValueError("Exactly three or five frames are required for verification")
 
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
     deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
@@ -117,7 +119,7 @@ def analyze_frames(frames: list[bytes], credential: Any) -> dict[str, Any]:
 
     content: list[dict[str, Any]] = [{
         "type": "text",
-        "text": "Verify this five-frame event. The images are chronological and labeled Frame 1 to Frame 5."
+        "text": f"Verify this {len(frames)}-frame event. The images are chronological and labeled Frame 1 to Frame {len(frames)}."
     }]
     for index, frame in enumerate(frames, start=1):
         content.append({"type": "text", "text": f"Frame {index}"})

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'camera_location_setup.dart';
+import 'camera_pairing.dart';
 
 class CameraWifiClient {
   CameraWifiClient({http.Client? client}) : _client = client ?? http.Client();
@@ -97,8 +98,9 @@ class CameraWifiClient {
 }
 
 class CameraWifiSetup extends StatefulWidget {
-  const CameraWifiSetup({super.key, this.client});
+  const CameraWifiSetup({super.key, this.client, this.pairing});
   final CameraWifiClient? client;
+  final CameraPairingService? pairing;
   @override
   State<CameraWifiSetup> createState() => _CameraWifiSetupState();
 }
@@ -109,6 +111,8 @@ class _CameraWifiSetupState extends State<CameraWifiSetup> {
   final _ssid = TextEditingController();
   final _password = TextEditingController();
   late final _client = widget.client ?? CameraWifiClient();
+  late final CameraPairingService _pairing =
+      widget.pairing ?? CameraPairingClient();
   bool _busy = false, _showPassword = false;
   String? _message, _target;
   String _recoveryName = 'EcoSort-Setup-xxxx';
@@ -136,7 +140,31 @@ class _CameraWifiSetupState extends State<CameraWifiSetup> {
       c.dispose();
     }
     if (widget.client == null) _client.close();
+    if (widget.pairing == null) (_pairing as CameraPairingClient).close();
     super.dispose();
+  }
+
+  Future<void> _pairCamera() async {
+    setState(() {
+      _busy = true;
+      _message = 'Searching for EcoSort camera…';
+    });
+    try {
+      final result = await _pairing.findAndPair();
+      _address.text = result.address;
+      _code.text = result.setupCode;
+      await _remember();
+      if (mounted) {
+        setState(
+          () => _message =
+              'Camera found and paired. IP and setup access were saved automatically.',
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _message = _error(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   String _error(Object e) => e is StateError
@@ -337,8 +365,20 @@ class _CameraWifiSetupState extends State<CameraWifiSetup> {
           'Change the network the camera joins. This does not change your phone hotspot settings. Use a 2.4 GHz WPA2 hotspot with mobile data for Azure.',
         ),
         const SizedBox(height: 20),
-        _field(_address, 'Camera IP', 'wifi_camera_ip'),
-        _field(_code, 'Camera setup code', 'wifi_setup_code', secret: true),
+        OutlinedButton.icon(
+          key: const Key('wifi_find_camera'),
+          onPressed: _busy ? null : _pairCamera,
+          icon: const Icon(Icons.wifi_find_rounded),
+          label: const Text('Find and pair camera'),
+        ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Advanced manual setup'),
+          children: [
+            _field(_address, 'Camera IP', 'wifi_camera_ip'),
+            _field(_code, 'Camera setup code', 'wifi_setup_code', secret: true),
+          ],
+        ),
         OutlinedButton.icon(
           onPressed: _busy ? null : _check,
           icon: const Icon(Icons.refresh),

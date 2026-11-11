@@ -3,3 +3,5 @@
 void setupCameraWifi(WebServer &server);
 void serviceCameraWifi();
 bool cameraWifiChanging();
+void printCameraWifiStatus();
+bool testConfiguredCameraWifi();

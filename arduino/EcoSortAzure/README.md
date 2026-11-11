@@ -4,13 +4,13 @@ This is the active camera-to-Azure firmware for the working AI-Thinker ESP32-CAM
 
 ## Pipeline
 
-1. Camera learns a background for 10 seconds after Wi-Fi connects.
-2. Two consecutive changed frames trigger a five-frame capture, spaced one second apart.
-3. A background task uploads five JPEGs to the existing private `waste-raw` Azure Blob container using a create/write-only SAS.
+1. Camera waits for verified internet time and stable auto-exposure, then learns the empty background.
+2. Two consecutive changed frames trigger three quality-checked captures, spaced 400 ms apart. Blurry, dark or overexposed frames are automatically retried.
+3. A background task uploads three JPEGs to the existing private `waste-raw` Azure Blob container using a create/write-only SAS.
 4. The device calls the existing `/api/process` Azure Function with its ingest key. Azure AI identifies the item and material, recycling guidance, confidence and best image.
-5. Flutter polls `/api/waste` every 10 seconds and fetches the image from `/api/waste/{event_id}/image`.
+5. The camera pushes capture/upload/analysis state to the paired Flutter app over local UDP. Analysis completion triggers an immediate `/api/waste` refresh; the 10-second poll remains as a fallback.
 
-Motion is a trigger, not a waste classification. Empty scenes and people can trigger capture but should be rejected by the cloud classifier. Verified waste requires at least 80% confidence and evidence in two distinct frames. Ambiguous items appear in the app as **Needs review**. The 15-second cooldown and background relearning reduce repeated events. Keep the camera stationary and present one item clearly for five seconds. Lighting, framing and network latency affect results.
+Motion is a trigger, not a waste classification. Empty scenes and people can trigger capture but should be rejected by the cloud classifier. Verified waste requires at least 80% confidence and evidence in two distinct frames. Ambiguous items appear in the app as **Needs review**. The 15-second cooldown and background relearning reduce repeated events. Keep the camera stationary and present one item clearly for about two seconds. Lighting, framing and network latency affect results. The fixed-focus lens must still be adjusted manually during installation; software reports poor sharpness but cannot turn the lens.
 
 ## Flash and run
 
@@ -54,9 +54,17 @@ The existing Azure history is preserved, including earlier diagnostic detections
 
 ## Bin location calibration
 
-The ESP32-CAM has no GPS. In the Android app, open Location (or Settings > Configure camera location), stand beside the bin, and tap **Use phone location**. Allow location access and check the reported accuracy. Enter the local camera IP and the 32-character **Camera location setup code** printed at startup in Serial Monitor, then tap **Save location to camera**.
+The ESP32-CAM has no GPS. For first-time setup, reset the camera, open Location (or Settings > Configure camera location), and tap **Find and pair camera** within five minutes. UDP discovery finds the camera on the local hotspot and the startup-only `/pair` endpoint transfers the setup credential; the app saves both IP and credential for future use. Then stand beside the bin, tap **Use phone location**, check the reported accuracy, and tap **Save location to camera**. Advanced manual IP/code fields remain as a fallback when a network blocks broadcast discovery.
 
 ## Change camera Wi-Fi from the app
+
+Firmware `recovery-retry-v2` restarts the HTTP listener after recovery starts and
+after station connection. It retries failed station connections every 30 seconds
+when no recovery clients are connected (every 10 seconds during a 45-second trial).
+The USB-only `s` command prints Wi-Fi and capture status without passwords. The
+USB-only `w` command tests the bootstrap credentials from `wifi_config.h` and
+saves them only after a stable connection. Enable the configured hotspot before
+sending `w`. Failed trials retain the previous saved profile and bin location.
 
 Open **Settings > Change camera Wi-Fi**. The app reuses your saved camera IP and setup code. Check the connection, enter the target hotspot name/password and select **Test and save Wi-Fi**. This changes the camera's credentials, not the phone's hotspot configuration. The target must be a 2.4 GHz WPA2 network. SSIDs allow 1–32 UTF-8 bytes; passwords allow 8–63 printable ASCII characters or a 64-digit hexadecimal PSK. Spaces are preserved.
 

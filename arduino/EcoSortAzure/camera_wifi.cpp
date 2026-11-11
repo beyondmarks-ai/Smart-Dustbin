@@ -9,12 +9,21 @@ namespace {
 // A single NVS blob atomically replaces the known-good pair only after a trial.
 struct Profile { char ssid[33]; char password[65]; };
 Preferences prefs;
+WebServer *setupServer = nullptr;
 Profile saved = {}, candidate = {};
 bool storageReady = false, pending = false, testing = false, apActive = false;
 bool wasConnected = false;
 uint32_t queuedAt = 0, trialAt = 0, stableAt = 0, offlineAt = 0, apOnlineAt = 0;
+uint32_t lastConnectAt = 0;
 String apName;
 const char *result = "connecting";
+
+void restartHttp() {
+  if (!setupServer) return;
+  setupServer->stop();
+  setupServer->begin();
+  Serial.println("Camera HTTP listener ready on port 80");
+}
 
 String quoted(const String &s) {
   String out = "\"";
@@ -42,7 +51,9 @@ void connectProfile(const Profile &profile) {
   WiFi.begin(profile.ssid, profile.password);
   stableAt = 0;
   offlineAt = millis();
+  lastConnectAt = offlineAt;
   wasConnected = false;
+  Serial.printf("Trying WiFi SSID: %s\n", profile.ssid);
 }
 
 void startRecovery() {
@@ -51,7 +62,10 @@ void startRecovery() {
   if (password.length() != 16) { Serial.println("Recovery unavailable: no setup code"); return; }
   WiFi.mode(WIFI_AP_STA);
   apActive = WiFi.softAP(apName.c_str(), password.c_str());
-  if (apActive) Serial.printf("WiFi recovery: %s, http://192.168.4.1/wifi/setup (password: first 16 setup-code characters)\n", apName.c_str());
+  if (apActive) {
+    restartHttp();
+    Serial.printf("WiFi recovery: %s, http://192.168.4.1/wifi/setup (password: first 16 setup-code characters)\n", apName.c_str());
+  }
 }
 
 String statusJson() {
@@ -79,6 +93,7 @@ document.getElementById('setup').onsubmit=async(e)=>{e.preventDefault();try{cons
 }
 
 void setupCameraWifi(WebServer &server) {
+  setupServer = &server;
   storageReady = prefs.begin("bin-wifi", false);
   const bool loaded = storageReady && prefs.getBytesLength("profile") == sizeof(Profile) &&
     prefs.getBytes("profile", &saved, sizeof(saved)) == sizeof(saved);
@@ -113,6 +128,22 @@ void setupCameraWifi(WebServer &server) {
 
 bool cameraWifiChanging() { return pending || testing; }
 
+void printCameraWifiStatus() {
+  Serial.println(statusJson()); // No passwords or setup tokens.
+}
+
+bool testConfiguredCameraWifi() {
+  if (!storageReady || pending || testing || azureCaptureBusy()) return false;
+  if (!valid(WIFI_SSID, WIFI_PASSWORD)) return false;
+  candidate = {};
+  strlcpy(candidate.ssid, WIFI_SSID, sizeof(candidate.ssid));
+  strlcpy(candidate.password, WIFI_PASSWORD, sizeof(candidate.password));
+  pending = true;
+  queuedAt = millis();
+  Serial.println("USB WiFi trial queued; enable configured hotspot within 45 seconds");
+  return true;
+}
+
 void serviceCameraWifi() {
   const uint32_t now = millis();
   if (pending && now - queuedAt >= 1000) {
@@ -122,7 +153,11 @@ void serviceCameraWifi() {
   }
   const bool connected = WiFi.status() == WL_CONNECTED;
   if (connected) {
-    if (!wasConnected) { stableAt = now; apOnlineAt = now; Serial.printf("WiFi connected: http://%s/\n", WiFi.localIP().toString().c_str()); }
+    if (!wasConnected) {
+      stableAt = now; apOnlineAt = now;
+      restartHttp();
+      Serial.printf("WiFi connected: http://%s/\n", WiFi.localIP().toString().c_str());
+    }
     if (testing && WiFi.SSID() == candidate.ssid && now - stableAt >= 3000) {
       testing = false;
       if (prefs.putBytes("profile", &candidate, sizeof(candidate)) == sizeof(candidate)) {
@@ -140,6 +175,14 @@ void serviceCameraWifi() {
   } else {
     if (wasConnected) offlineAt = now;
     if (!testing && now - offlineAt >= 30000) startRecovery();
+    // Explicitly retry an initial failed association. Pause background retries
+    // while a recovery client configures the camera to avoid channel switching.
+    if (!pending && now - lastConnectAt >= (testing ? 10000UL : 30000UL) &&
+        (testing || !apActive || WiFi.softAPgetStationNum() == 0)) {
+      lastConnectAt = now;
+      Serial.printf("WiFi retry: %s (status=%d)\n", testing ? candidate.ssid : saved.ssid, WiFi.status());
+      WiFi.reconnect();
+    }
   }
   wasConnected = WiFi.status() == WL_CONNECTED;
   if (testing && now - trialAt >= 45000) {

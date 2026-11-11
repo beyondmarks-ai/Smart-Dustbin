@@ -60,4 +60,7 @@ class WasteEntry {
   final String verificationStatus;
   final double? locationAccuracy;
   bool get needsReview => verificationStatus == 'review';
+  List<String> get bestFromWasteIdeas => reuseSafe && !needsReview
+      ? reuseIdeas.where((idea) => idea.trim().isNotEmpty).take(5).toList()
+      : const <String>[];
 }

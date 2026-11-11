@@ -55,7 +55,7 @@ Generate Windows UI previews with `flutter test tool/ui_preview_test.dart --upda
 
 Location maps use OpenStreetMap tiles with attribution and the map package's default cache. The map needs internet; saved coordinates remain readable when offline.
 
-To calibrate, stand beside the bin and open **Location > Use phone location**. Enter the camera IP and startup setup code from Serial Monitor, then **Save location to camera**. This saves coordinates on the ESP32 for future events, including after restarts. Recalibrate after moving the bin. Old detections are not retroactively assigned a location. See the [firmware guide](arduino/EcoSortAzure/README.md#bin-location-calibration).
+To calibrate, reset the camera once, open **Location**, and tap **Find and pair camera**. The app discovers the camera and saves its access details automatically. Then stand beside the bin, tap **Use phone location**, and **Save location to camera**. Manual IP/code fields remain under Advanced setup if local broadcast discovery is blocked. Recalibrate after moving the bin; old detections are not retroactively assigned a location. See the [firmware guide](arduino/EcoSortAzure/README.md#bin-location-calibration).
 
 To change the hotspot used by the camera, open **Settings > Change camera Wi-Fi**. Test and save the new credentials, then check the connection. A failed trial keeps the previous network; the protected EcoSort-Setup recovery hotspot also supports setup when the old network is unavailable. See the [Wi-Fi recovery guide](arduino/EcoSortAzure/README.md#change-camera-wi-fi-from-the-app).
 

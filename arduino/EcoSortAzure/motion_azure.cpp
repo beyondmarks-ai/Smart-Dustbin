@@ -17,15 +17,18 @@
 
 namespace {
 
-constexpr uint8_t kFrameCount = 5;
-constexpr uint32_t kFrameIntervalMs = 1000;
+constexpr uint8_t kFrameCount = 3;
+constexpr uint32_t kFrameIntervalMs = 400;
+constexpr uint8_t kMaxQualityRetries = 6;
+constexpr uint8_t kMinimumSharpness = 3;
+constexpr uint8_t kMinimumMeanLuminance = 25;
+constexpr uint8_t kMaximumMeanLuminance = 235;
 constexpr uint8_t kUploadAttempts = 3;
 constexpr uint8_t kAnalysisAttempts = 3;
 constexpr uint32_t kUploadConnectTimeoutMs = 15000;
 constexpr uint32_t kUploadRequestTimeoutMs = 30000;
 constexpr uint16_t kAnalysisRequestTimeoutMs = 60000;
 constexpr uint32_t kWifiReconnectTimeoutMs = 10000;
-constexpr uint32_t kInterFrameUploadDelayMs = 1000;
 constexpr uint8_t kMotionGridWidth = 16;
 constexpr uint8_t kMotionGridHeight = 12;
 constexpr size_t kMotionSampleCount = kMotionGridWidth * kMotionGridHeight;
@@ -50,6 +53,11 @@ const char *phase = "warming_up";
 String captureLocation;
 uint8_t nextFrameIndex = 0;
 uint32_t nextCaptureAtMs = 0;
+uint8_t qualityRetries = 0;
+bool startupReady = false;
+uint8_t startupStableSamples = 0;
+int16_t lastStartupMean = -1;
+uint32_t nextStartupCheckAtMs = 0;
 
 // Q8 fixed-point background: upper 8 bits are luminance and lower 8 bits
 // retain fractional changes for smooth adaptation.
@@ -155,6 +163,68 @@ bool buildMotionSignature(camera_fb_t *fb, uint8_t *signature) {
   return true;
 }
 
+struct FrameQuality {
+  uint8_t mean = 0;
+  uint8_t sharpness = 0;
+  uint8_t darkPercent = 0;
+  uint8_t brightPercent = 0;
+  bool acceptable = false;
+};
+
+bool inspectFrameQuality(camera_fb_t *fb, FrameQuality &quality) {
+  uint8_t signature[kMotionSampleCount];
+  if (!buildMotionSignature(fb, signature)) return false;
+  uint32_t total = 0, gradient = 0;
+  size_t gradientCount = 0, dark = 0, bright = 0;
+  for (uint8_t y = 0; y < kMotionGridHeight; ++y) {
+    for (uint8_t x = 0; x < kMotionGridWidth; ++x) {
+      const size_t index = y * kMotionGridWidth + x;
+      const uint8_t value = signature[index];
+      total += value;
+      if (value < 20) ++dark;
+      if (value > 245) ++bright;
+      if (x > 0) { gradient += abs(value - signature[index - 1]); ++gradientCount; }
+      if (y > 0) { gradient += abs(value - signature[index - kMotionGridWidth]); ++gradientCount; }
+    }
+  }
+  quality.mean = static_cast<uint8_t>(total / kMotionSampleCount);
+  quality.sharpness = gradientCount ? static_cast<uint8_t>(gradient / gradientCount) : 0;
+  quality.darkPercent = static_cast<uint8_t>(dark * 100 / kMotionSampleCount);
+  quality.brightPercent = static_cast<uint8_t>(bright * 100 / kMotionSampleCount);
+  quality.acceptable = quality.mean >= kMinimumMeanLuminance &&
+      quality.mean <= kMaximumMeanLuminance && quality.sharpness >= kMinimumSharpness &&
+      quality.darkPercent < 70 && quality.brightPercent < 70;
+  return true;
+}
+
+bool serviceStartupGate() {
+  if (startupReady) return true;
+  const uint32_t now = millis();
+  if (static_cast<int32_t>(now - nextStartupCheckAtMs) < 0) return false;
+  nextStartupCheckAtMs = now + 500;
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) return false;
+  FrameQuality quality;
+  const bool inspected = inspectFrameQuality(fb, quality);
+  esp_camera_fb_return(fb);
+  if (!inspected) return false;
+  if (lastStartupMean >= 0 && abs(static_cast<int>(quality.mean) - lastStartupMean) <= 8) {
+    if (startupStableSamples < 255) ++startupStableSamples;
+  } else {
+    startupStableSamples = 0;
+  }
+  lastStartupMean = quality.mean;
+  const bool clockReady = time(nullptr) >= 1700000000;
+  phase = clockReady ? "stabilizing_camera" : "syncing_time";
+  if (clockReady && startupStableSamples >= 3) {
+    startupReady = true;
+    phase = "warming_up";
+    resetMotionDetector(0);
+    Serial.printf("Camera ready: clock synced, exposure stable (mean %u)\n", quality.mean);
+  }
+  return startupReady;
+}
+
 bool cameraMovementDetected() {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
@@ -231,7 +301,8 @@ bool waitForWifi() {
   return WiFi.status() == WL_CONNECTED;
 }
 
-bool uploadFrame(const String &eventId, uint8_t frameNumber, const CapturedFrame &frame) {
+bool uploadFrame(const String &eventId, uint8_t frameNumber, const CapturedFrame &frame,
+                 WiFiClientSecure &client, HTTPClient &http) {
   if (!waitForWifi()) return false;
   if (time(nullptr) < 1700000000) {
     Serial.println("Waiting for NTP clock before verified TLS upload");
@@ -243,13 +314,6 @@ bool uploadFrame(const String &eventId, uint8_t frameNumber, const CapturedFrame
   }
   String url = String(AZURE_BLOB_CONTAINER_URL) + "/motion/" + eventId +
       "/frame_" + frameNumber + ".jpg?" + AZURE_BLOB_SAS_TOKEN;
-  WiFiClientSecure client;
-  client.setCACert(AZURE_ROOT_CA);
-  client.setHandshakeTimeout(15);
-  HTTPClient http;
-  http.setReuse(false);
-  http.setConnectTimeout(kUploadConnectTimeoutMs);
-  http.setTimeout(kUploadRequestTimeoutMs);
   if (!http.begin(client, url)) {
     Serial.println("Could not initialize the Azure upload request");
     return false;
@@ -257,19 +321,18 @@ bool uploadFrame(const String &eventId, uint8_t frameNumber, const CapturedFrame
   http.addHeader("x-ms-blob-type", "BlockBlob");
   http.addHeader("x-ms-version", "2023-11-03");
   http.addHeader("Content-Type", "image/jpeg");
-  Serial.printf("Uploading frame %u/5 (%u bytes), RSSI %d dBm, free heap %u\n",
-                frameNumber, static_cast<unsigned>(frame.length), WiFi.RSSI(),
+  Serial.printf("Uploading frame %u/%u (%u bytes), RSSI %d dBm, free heap %u\n",
+                frameNumber, kFrameCount, static_cast<unsigned>(frame.length), WiFi.RSSI(),
                 static_cast<unsigned>(ESP.getFreeHeap()));
   int status = http.sendRequest("PUT", frame.data, frame.length);
   String response = status > 0 ? http.getString() : String();
   http.end();
-  client.stop();
   if (status != HTTP_CODE_CREATED) {
     Serial.printf("Azure upload frame %u failed (HTTP %d, %s): %s\n", frameNumber,
                   status, HTTPClient::errorToString(status).c_str(), response.c_str());
     return false;
   }
-  Serial.printf("Azure uploaded frame %u/5\n", frameNumber);
+  Serial.printf("Azure uploaded frame %u/%u\n", frameNumber, kFrameCount);
   return true;
 }
 
@@ -288,7 +351,7 @@ bool requestAnalysis(const String &eventId) {
   http.addHeader("Accept", "application/json");
   http.addHeader("x-device-key", AZURE_DEVICE_INGEST_KEY);
   String body = String("{\"event_id\":\"") + eventId +
-      "\",\"device_id\":\"" + DEVICE_ID + "\"";
+      "\",\"device_id\":\"" + DEVICE_ID + "\",\"frame_count\":" + kFrameCount;
   body += captureLocation;
   body += "}";
   Serial.printf("Requesting Azure analysis for event %s\n", eventId.c_str());
@@ -330,11 +393,18 @@ void uploadCapturedFrames() {
 
   const String &eventId = eventIdForUpload;
   Serial.printf("Starting Azure upload for event %s\n", eventId.c_str());
+  WiFiClientSecure uploadClient;
+  uploadClient.setCACert(AZURE_ROOT_CA);
+  uploadClient.setHandshakeTimeout(15);
+  HTTPClient uploadHttp;
+  uploadHttp.setReuse(true);
+  uploadHttp.setConnectTimeout(kUploadConnectTimeoutMs);
+  uploadHttp.setTimeout(kUploadRequestTimeoutMs);
   bool uploaded = true;
   for (uint8_t index = 0; index < kFrameCount; ++index) {
     bool sent = false;
     for (uint8_t attempt = 1; attempt <= kUploadAttempts && !sent; ++attempt) {
-      sent = uploadFrame(eventId, index + 1, capturedFrames[index]);
+      sent = uploadFrame(eventId, index + 1, capturedFrames[index], uploadClient, uploadHttp);
       if (!sent && attempt < kUploadAttempts) delay(static_cast<uint32_t>(attempt) * 1500);
     }
     if (!sent) {
@@ -342,6 +412,8 @@ void uploadCapturedFrames() {
       break;
     }
   }
+  uploadHttp.end();
+  uploadClient.stop();
   if (uploaded) {
     bool analyzed = false;
     for (uint8_t attempt = 1; attempt <= kAnalysisAttempts && !analyzed; ++attempt) {
@@ -377,9 +449,9 @@ void startMotionCapture() {
   phase = "capturing";
   captureSequenceActive = true;
   nextFrameIndex = 0;
-  // Exactly five frames at +1, +2, +3, +4 and +5 seconds.
-  nextCaptureAtMs = millis() + kFrameIntervalMs;
-  Serial.println("Camera movement confirmed; starting five-frame capture");
+  qualityRetries = 0;
+  nextCaptureAtMs = millis();
+  Serial.println("Camera movement confirmed; starting fast three-frame capture");
 }
 
 void captureNextFrame() {
@@ -391,6 +463,26 @@ void captureNextFrame() {
     ++failedEvents;
     resetMotionDetector(MOTION_COOLDOWN_MS);
     releaseCapturedFrames();
+    return;
+  }
+
+  FrameQuality quality;
+  if (!inspectFrameQuality(fb, quality) || !quality.acceptable) {
+    esp_camera_fb_return(fb);
+    ++qualityRetries;
+    Serial.printf("Frame quality retry %u/%u: brightness=%u sharpness=%u dark=%u%% bright=%u%%\n",
+                  qualityRetries, kMaxQualityRetries, quality.mean, quality.sharpness,
+                  quality.darkPercent, quality.brightPercent);
+    if (qualityRetries >= kMaxQualityRetries) {
+      captureSequenceActive = false;
+      phase = "quality_failed";
+      ++failedEvents;
+      resetMotionDetector(1000);
+      releaseCapturedFrames();
+      Serial.println("Capture stopped: adjust lens focus or lighting and present the item again");
+    } else {
+      nextCaptureAtMs = millis() + 200;
+    }
     return;
   }
 
@@ -440,9 +532,12 @@ void captureNextFrame() {
 
 void setupMotionAzure() {
   configTime(0, 0, "pool.ntp.org", "time.google.com");
-  resetMotionDetector(MOTION_WARMUP_MS);
-  Serial.printf("Camera motion detection starts in %lu ms\n",
-                static_cast<unsigned long>(MOTION_WARMUP_MS));
+  startupReady = false;
+  startupStableSamples = 0;
+  lastStartupMean = -1;
+  nextStartupCheckAtMs = millis();
+  phase = "syncing_time";
+  Serial.println("Camera waits for internet time and stable exposure before detection");
   if (!azureConfigReady()) {
     Serial.println("Azure is not configured; edit azure_config.h before testing uploads");
   }
@@ -456,6 +551,7 @@ void serviceMotionAzure() {
     else { ++failedEvents; phase = "upload_failed"; }
     resetMotionDetector(MOTION_COOLDOWN_MS);
   }
+  if (!serviceStartupGate()) return;
   if (uploadActive) return;
   if (captureSequenceActive &&
       static_cast<int32_t>(millis() - nextCaptureAtMs) >= 0) {
@@ -471,7 +567,7 @@ void serviceMotionAzure() {
 
 
 bool triggerAzureCapture() {
-  if (uploadActive || captureSequenceActive || WiFi.status() != WL_CONNECTED) return false;
+  if (!startupReady || uploadActive || captureSequenceActive || WiFi.status() != WL_CONNECTED) return false;
   startMotionCapture();
   return true;
 }
@@ -484,4 +580,10 @@ String azureStatusJson() {
       ",\"failed_events\":" + failedEvents + ",\"last_analysis\":" +
       (lastOutcome.startsWith("{") ? lastOutcome : String("null")) + "}";
   return result;
+}
+
+String azureProgressJson() {
+  return String("{\"service\":\"ecosort-camera\",\"version\":1,\"state\":\"") + phase +
+      "\",\"event_id\":\"" + eventIdForUpload + "\",\"completed_events\":" +
+      completedEvents + ",\"failed_events\":" + failedEvents + "}";
 }

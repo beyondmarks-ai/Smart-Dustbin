@@ -212,6 +212,10 @@ class DetectionDetailsPage extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 18),
+        if (entry.bestFromWasteIdeas.isNotEmpty) ...[
+          _BestFromWasteCard(ideas: entry.bestFromWasteIdeas),
+          const SizedBox(height: 12),
+        ],
         Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -252,8 +256,6 @@ class DetectionDetailsPage extends StatelessWidget {
                   _line(context, 'Recycling guidance', entry.recyclingGuidance),
                 if (entry.contaminationNotes.isNotEmpty)
                   _line(context, 'Contamination', entry.contaminationNotes),
-                if (entry.reuseSafe && entry.reuseIdeas.isNotEmpty)
-                  _line(context, 'Reuse ideas', entry.reuseIdeas.join('\n')),
                 if (entry.safetyWarnings.isNotEmpty)
                   _line(context, 'Safety', entry.safetyWarnings.join('\n')),
                 if (entry.evidenceSummary.isNotEmpty)
@@ -298,6 +300,55 @@ class DetectionDetailsPage extends StatelessWidget {
       ),
     );
   }
+}
+
+class _BestFromWasteCard extends StatelessWidget {
+  const _BestFromWasteCard({required this.ideas});
+
+  final List<String> ideas;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    key: const Key('best_from_waste_card'),
+    color: Theme.of(context).colorScheme.primaryContainer,
+    child: Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.lightbulb_outline_rounded,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Best from Waste',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            ideas.first,
+            key: const Key('best_from_waste_primary'),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          for (final idea in ideas.skip(1)) ...[
+            const SizedBox(height: 8),
+            Text('• $idea'),
+          ],
+        ],
+      ),
+    ),
+  );
 }
 
 class LocationPage extends StatefulWidget {

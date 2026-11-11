@@ -1,4 +1,4 @@
-// EcoSort Azure: camera motion -> five JPEG frames -> Azure classifier -> Flutter.
+// EcoSort Azure: camera motion -> three quality-checked JPEGs -> Azure -> Flutter.
 // Board: AI Thinker ESP32-CAM. Serial Monitor: 115200 baud.
 // Ground GPIO0 only for uploading; disconnect it and reset to run.
 #include <Arduino.h>
@@ -21,7 +21,7 @@ const char PAGE[] PROGMEM = R"HTML(<!doctype html>
 <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>EcoSort Azure Camera</title></head>
 <body style="font-family:Arial;text-align:center;background:#eee">
-<h1>EcoSort Azure Camera</h1><p>Motion starts classification automatically. Hold each item clearly in view for five seconds.</p><button onclick="detect()">Classify this item</button><pre id="cloud">Waiting for status</pre><p id="status">Loading camera image...</p>
+<h1>EcoSort Azure Camera</h1><p>Motion starts classification automatically. Hold each item clearly in view for about two seconds.</p><button onclick="detect()">Classify this item</button><pre id="cloud">Waiting for status</pre><p id="status">Loading camera image...</p>
 <img id="camera" alt="Camera image" style="max-width:100%;width:640px">
 <p>Images refresh automatically. <a href="/capture">Open a photo</a> | <a href="/wifi/setup">Change Wi-Fi</a></p>
 <script>
@@ -81,7 +81,7 @@ bool initCamera() {
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
   } else {
-    Serial.println("EcoSort requires PSRAM for its five-frame classification buffer.");
+    Serial.println("EcoSort requires PSRAM for its multi-frame classification buffer.");
     return false;
   }
   Serial.printf("PSRAM: %s\n", hasPsram ? "detected" : "not detected; using DRAM");
@@ -131,6 +131,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n=== EcoSort Azure waste detection ===");
+  Serial.println("Firmware: recovery-retry-v2 | USB: i=info, s=status, w=test configured WiFi, c=capture");
   setupCameraLocation(server);
   cameraReady = initCamera();
 
@@ -155,7 +156,7 @@ void setup() {
   });
   server.on("/detect", HTTP_POST, []() {
     server.send(cameraReady && !cameraWifiChanging() && triggerAzureCapture() ? 202 : 409, "text/plain",
-                "Present the item for five seconds; see status below.");
+                "Hold the item steady while three quality-checked frames are captured.");
   });
   setupCameraWifi(server);
   server.begin(); // Also serve recovery while the upstream hotspot is offline.
@@ -164,6 +165,7 @@ void setup() {
 void loop() {
   server.handleClient();
   serviceCameraWifi();
+  serviceCameraPairing();
   if (cameraReady && !cameraWifiChanging()) {
     if (!serverReady && WiFi.status() == WL_CONNECTED) {
       serverReady = true;
@@ -172,6 +174,7 @@ void loop() {
     }
     if (serverReady) serviceMotionAzure();
   }
+  if (serverReady) pushCameraStatus(azureProgressJson());
   if (Serial.available()) {
     const char command = Serial.read();
     if (command == 'i') {
@@ -179,8 +182,14 @@ void loop() {
       if (WiFi.status() == WL_CONNECTED) Serial.printf("Camera IP: %s\n", WiFi.localIP().toString().c_str());
       else if (WiFi.getMode() == WIFI_AP_STA) Serial.printf("Camera IP: %s (recovery)\n", WiFi.softAPIP().toString().c_str());
       else Serial.println("Camera IP: offline; waiting for hotspot or recovery");
-    } else if (command == 'c' && cameraReady && serverReady && !cameraWifiChanging()) {
-      triggerAzureCapture();
+    } else if (command == 's') {
+      printCameraWifiStatus();
+      Serial.println(azureStatusJson());
+    } else if (command == 'w') {
+      if (!testConfiguredCameraWifi()) Serial.println("WiFi trial unavailable: camera busy, invalid config or storage error");
+    } else if (command == 'c') {
+      if (!cameraReady || !serverReady || cameraWifiChanging() || !triggerAzureCapture())
+        Serial.println("Capture not started: check camera, WiFi and busy state with s");
     }
   }
   if (millis() - lastStatus >= 15000) {

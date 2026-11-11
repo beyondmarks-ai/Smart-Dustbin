@@ -5,6 +5,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'camera_pairing.dart';
+
 class CameraLocationClient {
   CameraLocationClient({http.Client? client})
     : _client = client ?? http.Client();
@@ -136,7 +138,9 @@ class CameraLocationClient {
 }
 
 class CameraLocationSetup extends StatefulWidget {
-  const CameraLocationSetup({super.key});
+  const CameraLocationSetup({super.key, this.pairing});
+
+  final CameraPairingService? pairing;
   @override
   State<CameraLocationSetup> createState() => _CameraLocationSetupState();
 }
@@ -149,11 +153,14 @@ class _CameraLocationSetupState extends State<CameraLocationSetup> {
   final _label = TextEditingController(text: 'Smart bin');
   final _placeAddress = TextEditingController();
   final _client = CameraLocationClient();
+  late final CameraPairingService _pairing =
+      widget.pairing ?? CameraPairingClient();
   Position? _fix;
   bool _busy = false;
   String? _message;
   bool _success = false;
   bool _loadedLocation = false;
+  int _interaction = 0;
 
   @override
   void initState() {
@@ -162,6 +169,7 @@ class _CameraLocationSetupState extends State<CameraLocationSetup> {
   }
 
   Future<void> _load() async {
+    final interaction = _interaction;
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     _address.text = prefs.getString('camera_location_ip') ?? '';
@@ -172,6 +180,7 @@ class _CameraLocationSetupState extends State<CameraLocationSetup> {
       try {
         final location = await _client.read(_address.text);
         if (!mounted ||
+            interaction != _interaction ||
             _fix != null ||
             _latitude.text.isNotEmpty ||
             _longitude.text.isNotEmpty) {
@@ -190,7 +199,7 @@ class _CameraLocationSetupState extends State<CameraLocationSetup> {
           });
         }
       } catch (_) {
-        if (mounted && _fix == null) {
+        if (mounted && interaction == _interaction && _fix == null) {
           setState(
             () => _message =
                 'Camera is unavailable. Check its IP and hotspot before saving.',
@@ -213,10 +222,39 @@ class _CameraLocationSetupState extends State<CameraLocationSetup> {
       controller.dispose();
     }
     _client.close();
+    if (widget.pairing == null) (_pairing as CameraPairingClient).close();
     super.dispose();
   }
 
+  Future<void> _pairCamera() async {
+    _interaction++;
+    setState(() {
+      _busy = true;
+      _success = false;
+      _message = 'Searching for EcoSort camera…';
+    });
+    try {
+      final result = await _pairing.findAndPair();
+      _address.text = result.address;
+      _code.text = result.setupCode;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('camera_location_ip', result.address);
+      await prefs.setString('camera_location_code', result.setupCode);
+      if (!mounted) return;
+      setState(() {
+        _success = true;
+        _message =
+            'Camera found and paired. You will not need to enter its IP or setup code again.';
+      });
+    } catch (error) {
+      _error(error);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _locate() async {
+    _interaction++;
     setState(() {
       _busy = true;
       _success = false;
@@ -268,6 +306,7 @@ class _CameraLocationSetupState extends State<CameraLocationSetup> {
   }
 
   Future<void> _save() async {
+    _interaction++;
     setState(() {
       _busy = true;
       _success = false;
@@ -372,9 +411,21 @@ class _CameraLocationSetupState extends State<CameraLocationSetup> {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       const Text(
-        'Stand beside the bin. Read your phone location, then save it to the camera. Recalibrate after moving the bin.',
+        'Pair once, then stand beside the bin and save your phone location. Recalibrate after moving the bin.',
       ),
       const SizedBox(height: 16),
+      OutlinedButton.icon(
+        key: const Key('find_camera'),
+        onPressed: _busy ? null : _pairCamera,
+        icon: const Icon(Icons.wifi_find_rounded),
+        label: Text(_busy ? 'Please wait…' : 'Find and pair camera'),
+      ),
+      const Padding(
+        padding: EdgeInsets.only(top: 8, bottom: 16),
+        child: Text(
+          'First time only: press the camera RST button, then tap Find. Pairing closes automatically after five minutes.',
+        ),
+      ),
       FilledButton.icon(
         key: const Key('use_phone_location'),
         onPressed: _busy ? null : _locate,
@@ -403,12 +454,14 @@ class _CameraLocationSetupState extends State<CameraLocationSetup> {
         'bin_address',
         maxLength: 150,
       ),
-      _field(_address, 'Camera IP (shown in Serial Monitor)', 'camera_ip'),
-      _field(
-        _code,
-        'Camera setup code (shown in Serial Monitor)',
-        'camera_setup_code',
-        secret: true,
+      ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        title: const Text('Advanced manual setup'),
+        subtitle: const Text('Only needed if automatic discovery is blocked'),
+        children: [
+          _field(_address, 'Camera IP', 'camera_ip'),
+          _field(_code, 'Camera setup code', 'camera_setup_code', secret: true),
+        ],
       ),
       FilledButton.icon(
         key: const Key('save_camera_location'),

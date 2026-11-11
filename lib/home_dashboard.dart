@@ -10,6 +10,7 @@ import 'report_exporter.dart';
 import 'app_preferences.dart';
 import 'feature_pages.dart';
 import 'detection_location.dart';
+import 'camera_status_service.dart';
 
 abstract final class AppColors {
   static bool dark = false;
@@ -25,11 +26,17 @@ abstract final class AppColors {
 }
 
 class HomeDashboard extends StatefulWidget {
-  const HomeDashboard({super.key, this.repository, this.onLogout});
+  const HomeDashboard({
+    super.key,
+    this.repository,
+    this.onLogout,
+    this.cameraStatusService,
+  });
 
   final VoidCallback? onLogout;
 
   final WasteRepository? repository;
+  final CameraStatusService? cameraStatusService;
 
   @override
   State<HomeDashboard> createState() => _HomeDashboardState();
@@ -42,6 +49,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final Set<String> _clearedEntryKeys = <String>{};
   Timer? _refreshTimer;
+  StreamSubscription<CameraStatusUpdate>? _cameraStatusSubscription;
+  late final CameraStatusService _cameraStatusService =
+      widget.cameraStatusService ?? UdpCameraStatusService();
+  CameraStatusUpdate? _cameraStatus;
   late WasteRepository _repository;
   List<WasteEntry>? _entries;
   Object? _loadError;
@@ -55,6 +66,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
     _repository = widget.repository ?? AwsWasteRepository();
     appPreferences.addListener(_preferencesChanged);
     _loadWaste();
+    _cameraStatusSubscription = _cameraStatusService.updates.listen(
+      _cameraStatusChanged,
+    );
+    unawaited(_cameraStatusService.start());
     _refreshTimer = Timer.periodic(
       _refreshInterval,
       (_) => _loadWaste(scrollToNewWaste: true),
@@ -78,10 +93,23 @@ class _HomeDashboardState extends State<HomeDashboard> {
     if (mounted) setState(() {});
   }
 
+  void _cameraStatusChanged(CameraStatusUpdate update) {
+    if (!mounted) return;
+    final previous = _cameraStatus;
+    setState(() => _cameraStatus = update);
+    if (update.state == 'analyzed' &&
+        (previous?.state != 'analyzed' ||
+            previous?.eventId != update.eventId)) {
+      unawaited(_loadWaste(scrollToNewWaste: true));
+    }
+  }
+
   @override
   void dispose() {
     appPreferences.removeListener(_preferencesChanged);
     _refreshTimer?.cancel();
+    _cameraStatusSubscription?.cancel();
+    if (widget.cameraStatusService == null) _cameraStatusService.close();
     _scrollController.dispose();
     super.dispose();
   }
@@ -278,17 +306,19 @@ class _HomeDashboardState extends State<HomeDashboard> {
   }
 
   Future<void> _openShareReport() async {
-    final period = await showModalBottomSheet<_ReportPeriod>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _ShareReportSheet(),
-    );
-    if (period == null || !mounted) return;
     final entries = _entries ?? <WasteEntry>[];
+    final request = await showModalBottomSheet<_ReportRequest>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _ShareReportSheet(entries: entries),
+    );
+    if (request == null || !mounted) return;
     try {
       await WasteReportExporter.createAndShare(
-        entries: _filterReportEntries(entries, period),
-        periodLabel: period.label,
+        entries: _filterReportEntries(entries, request.period),
+        periodLabel: request.period.label,
+        columns: request.columns,
       );
     } catch (_) {
       if (mounted) {
@@ -346,6 +376,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
             onClear: _confirmClearWaste,
             onMenu: () => _scaffoldKey.currentState?.openDrawer(),
             onShare: _openShareReport,
+            cameraStatus: _cameraStatus,
           ),
           1 => _InsightsView(
             key: ValueKey('insights_destination'),
@@ -410,6 +441,7 @@ class _HomeView extends StatelessWidget {
     required this.onClear,
     required this.onMenu,
     required this.onShare,
+    required this.cameraStatus,
   });
 
   final ScrollController scrollController;
@@ -420,6 +452,7 @@ class _HomeView extends StatelessWidget {
   final Future<void> Function() onClear;
   final VoidCallback onMenu;
   final VoidCallback onShare;
+  final CameraStatusUpdate? cameraStatus;
 
   @override
   Widget build(BuildContext context) {
@@ -444,6 +477,10 @@ class _HomeView extends StatelessWidget {
                         SizedBox(height: 8),
                         _Greeting(),
                         SizedBox(height: 16),
+                        if (cameraStatus != null) ...[
+                          _CameraProgressCard(status: cameraStatus!),
+                          SizedBox(height: 12),
+                        ],
                         _DeviceCard(fillLevel: fillLevel),
                         SizedBox(height: 16),
                         _WasteInventoryCard(
@@ -460,6 +497,72 @@ class _HomeView extends StatelessWidget {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _CameraProgressCard extends StatelessWidget {
+  const _CameraProgressCard({required this.status});
+
+  final CameraStatusUpdate status;
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, icon, active) = switch (status.state) {
+      'syncing_time' => ('Preparing secure camera time', Icons.schedule, true),
+      'stabilizing_camera' => ('Adjusting camera exposure', Icons.tune, true),
+      'warming_up' => ('Learning the empty bin view', Icons.visibility, true),
+      'capturing' => ('Capturing 3 clear photos', Icons.camera_alt, true),
+      'uploading' => (
+        'Uploading and analysing waste',
+        Icons.cloud_upload,
+        true,
+      ),
+      'analyzed' => ('Latest detection ready', Icons.check_circle, false),
+      'quality_failed' => (
+        'Improve lighting or lens focus, then retry',
+        Icons.center_focus_weak,
+        false,
+      ),
+      'upload_failed' => (
+        'Upload failed; camera will retry on new motion',
+        Icons.cloud_off,
+        false,
+      ),
+      _ => ('Camera ready for waste', Icons.sensors, false),
+    };
+    return Semantics(
+      liveRegion: true,
+      child: Container(
+        key: const Key('camera_progress'),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: active
+              ? AppColors.green.withValues(alpha: .12)
+              : AppColors.cardDeep,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.cardBorder),
+        ),
+        child: Row(
+          children: [
+            if (active)
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              )
+            else
+              Icon(icon, color: AppColors.green, size: 22),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2226,109 +2329,268 @@ enum _ReportPeriod {
   final int days;
 }
 
+class _ReportRequest {
+  const _ReportRequest(this.period, this.columns);
+  final _ReportPeriod period;
+  final Set<WasteReportColumn> columns;
+}
+
 class _ShareReportSheet extends StatefulWidget {
-  const _ShareReportSheet();
+  const _ShareReportSheet({required this.entries});
+
+  final List<WasteEntry> entries;
 
   @override
   State<_ShareReportSheet> createState() => _ShareReportSheetState();
 }
 
 class _ShareReportSheetState extends State<_ShareReportSheet> {
-  _ReportPeriod _selected = _ReportPeriod.lastSevenDays;
+  _ReportPeriod _selected = _ReportPeriod.all;
+  Set<WasteReportColumn> _columns = {...WasteReportColumn.values};
+
+  static const _wasteAndLocation = <WasteReportColumn>{
+    WasteReportColumn.date,
+    WasteReportColumn.time,
+    WasteReportColumn.wasteName,
+    WasteReportColumn.locationName,
+    WasteReportColumn.address,
+    WasteReportColumn.latitude,
+    WasteReportColumn.longitude,
+    WasteReportColumn.bestFromWaste,
+  };
+
+  List<WasteEntry> get _previewEntries {
+    if (_selected == _ReportPeriod.all) return widget.entries;
+    final start = DateTime.now().subtract(Duration(days: _selected.days));
+    return widget.entries.where((entry) {
+      final captured = DateTime.tryParse(entry.capturedAt ?? '');
+      return captured == null || captured.isAfter(start);
+    }).toList();
+  }
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: EdgeInsets.fromLTRB(22, 12, 22, 28),
-    decoration: BoxDecoration(
-      color: AppColors.card,
-      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-    ),
-    child: SafeArea(
-      top: false,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width: 42,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.cardBorder,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-          ),
-          SizedBox(height: 22),
-          Row(
-            children: [
-              CircleAvatar(
-                backgroundColor: Color(0x1A2C9851),
-                child: Icon(Icons.table_view_rounded, color: AppColors.green),
-              ),
-              SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Share waste report',
-                      style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    SizedBox(height: 3),
-                    Text(
-                      'Excel file (.xlsx) with summary and detections',
-                      style: TextStyle(color: AppColors.muted, fontSize: 12),
-                    ),
-                  ],
+  Widget build(BuildContext context) => FractionallySizedBox(
+    heightFactor: .9,
+    child: Container(
+      padding: EdgeInsets.fromLTRB(22, 12, 22, 28),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 42,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.cardBorder,
+                  borderRadius: BorderRadius.circular(4),
                 ),
               ),
-            ],
-          ),
-          SizedBox(height: 24),
-          Text(
-            'Period',
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-          ),
-          SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 9,
-            children: [
-              for (final period in _ReportPeriod.values)
-                ChoiceChip(
-                  label: Text(period.label),
-                  selected: _selected == period,
-                  onSelected: (_) => setState(() => _selected = period),
-                  selectedColor: AppColors.green.withValues(alpha: .14),
-                  labelStyle: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: _selected == period
-                        ? AppColors.lime
-                        : AppColors.textPrimary,
+            ),
+            SizedBox(height: 18),
+            Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: Color(0x1A2C9851),
+                  child: Icon(Icons.table_view_rounded, color: AppColors.green),
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Share waste report',
+                        style: TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      SizedBox(height: 3),
+                      Text(
+                        'Excel file (.xlsx) with summary and detections',
+                        style: TextStyle(color: AppColors.muted, fontSize: 12),
+                      ),
+                    ],
                   ),
                 ),
-            ],
-          ),
-          SizedBox(height: 26),
-          FilledButton.icon(
-            onPressed: () => Navigator.pop(context, _selected),
-            icon: Icon(Icons.ios_share_rounded),
-            label: Text(
-              'Create and share',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+              ],
             ),
-            style: FilledButton.styleFrom(
-              minimumSize: Size.fromHeight(54),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(27),
+            SizedBox(height: 16),
+            Expanded(
+              child: ListView(
+                children: [
+                  Text(
+                    'Period',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                  ),
+                  SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 9,
+                    children: [
+                      for (final period in _ReportPeriod.values)
+                        ChoiceChip(
+                          label: Text(period.label),
+                          selected: _selected == period,
+                          onSelected: (_) => setState(() => _selected = period),
+                          selectedColor: AppColors.green.withValues(alpha: .14),
+                        ),
+                    ],
+                  ),
+                  SizedBox(height: 22),
+                  Text(
+                    'Waste included (${_previewEntries.length})',
+                    key: Key('report_waste_preview'),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                  ),
+                  SizedBox(height: 8),
+                  if (_previewEntries.isEmpty)
+                    Text(
+                      'No detections found for this period.',
+                      style: TextStyle(color: AppColors.muted),
+                    )
+                  else ...[
+                    for (final entry in _previewEntries.take(8))
+                      Padding(
+                        padding: EdgeInsets.symmetric(vertical: 3),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.recycling_rounded,
+                              size: 17,
+                              color: AppColors.green,
+                            ),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                entry.name,
+                                style: TextStyle(fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            Text(
+                              'x${entry.count}',
+                              style: TextStyle(color: AppColors.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (_previewEntries.length > 8)
+                      Text(
+                        '+ ${_previewEntries.length - 8} more',
+                        style: TextStyle(color: AppColors.muted),
+                      ),
+                  ],
+                  SizedBox(height: 20),
+                  Text(
+                    'Top 5 Best from Waste',
+                    key: Key('report_top_five'),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                  ),
+                  SizedBox(height: 8),
+                  if (WasteReportExporter.topSuggestions(
+                    _previewEntries,
+                  ).isEmpty)
+                    Text(
+                      'Ideas appear after a waste item is safely verified.',
+                      style: TextStyle(color: AppColors.muted),
+                    )
+                  else
+                    for (final suggestion in WasteReportExporter.topSuggestions(
+                      _previewEntries,
+                    ).indexed)
+                      Padding(
+                        padding: EdgeInsets.only(bottom: 9),
+                        child: Text(
+                          '${suggestion.$1 + 1}. ${suggestion.$2.wasteName}: '
+                          '${suggestion.$2.idea}',
+                          style: TextStyle(fontSize: 12, height: 1.35),
+                        ),
+                      ),
+                  SizedBox(height: 22),
+                  Text(
+                    'Columns to include',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                  ),
+                  SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      TextButton(
+                        key: Key('report_all_columns'),
+                        onPressed: () => setState(
+                          () => _columns = {...WasteReportColumn.values},
+                        ),
+                        child: Text('All columns'),
+                      ),
+                      TextButton(
+                        key: Key('report_waste_location'),
+                        onPressed: () =>
+                            setState(() => _columns = {..._wasteAndLocation}),
+                        child: Text('Waste + location'),
+                      ),
+                      TextButton(
+                        onPressed: () => setState(() => _columns = {}),
+                        child: Text('Clear'),
+                      ),
+                    ],
+                  ),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 7,
+                    children: [
+                      for (final column in WasteReportColumn.values)
+                        FilterChip(
+                          key: Key('report_column_${column.name}'),
+                          label: Text(column.label),
+                          selected: _columns.contains(column),
+                          onSelected: (selected) => setState(() {
+                            final next = {..._columns};
+                            selected ? next.add(column) : next.remove(column);
+                            _columns = next;
+                          }),
+                          selectedColor: AppColors.green.withValues(alpha: .14),
+                        ),
+                    ],
+                  ),
+                  if (_columns.isEmpty)
+                    Padding(
+                      padding: EdgeInsets.only(top: 10),
+                      child: Text(
+                        'Select at least one column.',
+                        style: TextStyle(color: Colors.redAccent),
+                      ),
+                    ),
+                ],
               ),
             ),
-          ),
-        ],
+            SizedBox(height: 14),
+            FilledButton.icon(
+              onPressed: _columns.isEmpty
+                  ? null
+                  : () => Navigator.pop(
+                      context,
+                      _ReportRequest(_selected, {..._columns}),
+                    ),
+              icon: Icon(Icons.ios_share_rounded),
+              label: Text(
+                'Create and share',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+              ),
+              style: FilledButton.styleFrom(
+                minimumSize: Size.fromHeight(54),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(27),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     ),
   );

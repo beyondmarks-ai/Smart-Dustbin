@@ -1,6 +1,8 @@
 #include "camera_location.h"
 #include "azure_config.h"
 #include <Preferences.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
 #include <math.h>
 #include "esp_random.h"
 
@@ -11,6 +13,14 @@ String setupToken;
 bool storageReady = false;
 uint8_t deniedAttempts = 0;
 uint32_t deniedSince = 0;
+WiFiUDP discovery;
+bool discoveryReady = false;
+constexpr uint16_t kDiscoveryPort = 4210;
+constexpr uint32_t kPairingWindowMs = 5UL * 60UL * 1000UL;
+IPAddress appSubscriber;
+uint16_t appSubscriberPort = 0;
+uint32_t appSubscribedAt = 0;
+String lastPushedStatus;
 
 String quoted(const String &value) {
   String out = "\"";
@@ -89,6 +99,66 @@ void setupCameraLocation(WebServer &server) {
     Serial.println("Camera location saved for future captures");
     server.send(200, "application/json", locationResponse());
   });
+  server.on("/pair", HTTP_POST, [&server]() {
+    server.sendHeader("Cache-Control", "no-store");
+    if (!storageReady) {
+      server.send(503, "text/plain", "Setup storage unavailable");
+      return;
+    }
+    if (millis() > kPairingWindowMs) {
+      server.send(403, "text/plain", "Pairing window closed; reset the camera and retry");
+      return;
+    }
+    server.send(200, "application/json",
+                String("{\"service\":\"ecosort-camera\",\"version\":1,\"ip\":") +
+                    quoted(WiFi.localIP().toString()) + ",\"setup_token\":" +
+                    quoted(setupToken) + "}");
+    Serial.println("Camera paired with a local app during the startup window");
+  });
+}
+
+void serviceCameraPairing() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (discoveryReady) { discovery.stop(); discoveryReady = false; }
+    appSubscriberPort = 0;
+    return;
+  }
+  if (!discoveryReady) {
+    discoveryReady = discovery.begin(kDiscoveryPort) == 1;
+    if (discoveryReady) Serial.printf("Camera discovery ready on UDP %u\n", kDiscoveryPort);
+    return;
+  }
+  const int size = discovery.parsePacket();
+  if (size <= 0 || size > 64) return;
+  char request[65] = {};
+  const int read = discovery.read(reinterpret_cast<uint8_t *>(request), sizeof(request) - 1);
+  if (read <= 0) return;
+  const String command(request);
+  String response;
+  if (command == "ECOSORT_DISCOVER_V1") {
+    response = String("{\"service\":\"ecosort-camera\",\"version\":1,\"ip\":") +
+        quoted(WiFi.localIP().toString()) + ",\"pairing_available\":" +
+        (millis() <= kPairingWindowMs ? "true" : "false") + "}";
+  } else if (command == "ECOSORT_SUBSCRIBE_V1") {
+    appSubscriber = discovery.remoteIP();
+    appSubscriberPort = discovery.remotePort();
+    appSubscribedAt = millis();
+    lastPushedStatus = "";
+    response = "{\"service\":\"ecosort-camera\",\"version\":1,\"subscribed\":true}";
+  } else {
+    return;
+  }
+  discovery.beginPacket(discovery.remoteIP(), discovery.remotePort());
+  discovery.write(reinterpret_cast<const uint8_t *>(response.c_str()), response.length());
+  discovery.endPacket();
+}
+
+void pushCameraStatus(const String &status) {
+  if (!discoveryReady || appSubscriberPort == 0 || millis() - appSubscribedAt > 30000 ||
+      status == lastPushedStatus) return;
+  discovery.beginPacket(appSubscriber, appSubscriberPort);
+  discovery.write(reinterpret_cast<const uint8_t *>(status.c_str()), status.length());
+  if (discovery.endPacket()) lastPushedStatus = status;
 }
 
 String cameraLocationJson() {
