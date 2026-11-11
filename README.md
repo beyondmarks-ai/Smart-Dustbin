@@ -55,6 +55,27 @@ Generate Windows UI previews with `flutter test tool/ui_preview_test.dart --upda
 
 Location maps use OpenStreetMap tiles with attribution and the map package's default cache. The map needs internet; saved coordinates remain readable when offline.
 
+## Update another Windows development PC
+
+On the other PC, open PowerShell in the existing project folder and get the updater once:
+
+```powershell
+git pull --ff-only origin main
+```
+
+After that, run `Update-SmartDustbin.cmd` whenever you want the newest version. It safely pulls `main`, restores Flutter packages, analyzes and tests the app, starts the first configured Android Studio emulator when necessary, builds a fresh debug APK, installs it, and launches it.
+
+Useful options:
+
+```powershell
+.\Update-SmartDustbin.cmd -AvdName Pixel_8_API_35
+.\Update-SmartDustbin.cmd -CheckOnly
+.\Update-SmartDustbin.cmd -Release
+.\Update-SmartDustbin.cmd -Clean
+```
+
+The updater stops without changing files when the Git folder contains uncommitted work. Create at least one virtual device in Android Studio's Device Manager before the first run.
+
 To calibrate, reset the camera once, open **Location**, and tap **Find and pair camera**. The app discovers the camera and saves its access details automatically. Then stand beside the bin, tap **Use phone location**, and **Save location to camera**. Manual IP/code fields remain under Advanced setup if local broadcast discovery is blocked. Recalibrate after moving the bin; old detections are not retroactively assigned a location. See the [firmware guide](arduino/EcoSortAzure/README.md#bin-location-calibration).
 
 To change the hotspot used by the camera, open **Settings > Change camera Wi-Fi**. Test and save the new credentials, then check the connection. A failed trial keeps the previous network; the protected EcoSort-Setup recovery hotspot also supports setup when the old network is unavailable. See the [Wi-Fi recovery guide](arduino/EcoSortAzure/README.md#change-camera-wi-fi-from-the-app).
